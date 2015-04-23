@@ -26,13 +26,408 @@ Additionally, if any output file is a directory, the final output will be a dire
 
 The script will try to recognize the record type of the input file based on its extension. If it can't you will have to either supply a regex pattern to split the file on (-p "^>" for fasta, -p "^LOCUS" for gbk, etc) or manually set the file type (eg: -T fasta).
 """
-SGE='SGE'
-SLURM='SLURM'
-LOCAL='LOCAL'
+SGE='sge'
+SLURM='slurm'
+LOCAL='local'
 
 from optparse import OptionParser
 import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, Queue
 from numpy import ceil
+
+###########
+# edl.util (selected functions)
+#import re, logging, sys, os
+#from edl.expressions import accessionRE
+#logger=logging.getLogger(__name__)
+##########
+def countBasesInFasta(fastaFile):
+    """
+    Given a fasta file, return a dict where the number of records and the total number of bases are given by 'records' and 'bases' respectively.
+    """
+    recordRE=re.compile(r'^>')
+    whiteSpaceRE=re.compile(r'\s+')
+    totalBases=0
+    totalSeqs=0
+    with open(fastaFile) as f:
+        for line in f:
+            if recordRE.match(line):
+                totalSeqs+=1
+                continue
+            totalBases+=len(whiteSpaceRE.sub('',line))
+
+urlRE=re.compile(r'[a-z]+\:\/\/')
+def openInputFile(infile, *args):
+    """
+    return input stream. Allow for text, gzipped text, or standard input if None given.
+    """
+    if infile is None:
+        logging.info("Reading input from STDIN")
+        return sys.stdin
+
+    if isinstance(infile, str):
+        if urlRE.match(infile):
+            import urllib2
+            return urllib2.urlopen(infile)
+        if len(infile)>3 and infile[-3:]=='.gz':
+            import gzip
+            return gzip.GzipFile(infile,'rb')
+        elif len(infile)>4 and infile[-4:]=='.bz2':
+            import bz2
+            return bz2.BZ2File(infile,'rb')
+        else:
+            return open(infile,'rU')
+    else:
+        return infile
+
+############
+# edl.batch
+#import tempfile, re, os, logging, sys
+#import numpy as np
+#from edl.util import openInputFile
+############
+
+def checkTmpDir(tmpDir,jobName):
+    """
+    Make sure tmp dir is empty.
+    Create it if necessary.
+    If name is None, create dir name based on job name
+    """
+    if tmpDir is None or tmpDir=="":
+        tmpDir=tempfile.mkdtemp(suffix=jobName,dir=".")
+    else:
+        if os.path.exists(tmpDir):
+            raise Exception("Temporary directory already exists! (%s)" % (tmpDir))
+        else:
+            os.makedirs(tmpDir)
+
+    logging.debug("Created temporary directory: %s" % tmpDir)
+    return tmpDir
+
+def fragmentInput(infile, options, tmpdir, fragmentBase, suffix='.in'):
+    """
+    Wraps the following methods into one:
+        getFileType(options, infile)
+        getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
+        fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase,   splitOnSize=options.splitOnSize, suffix=)
+    """
+    fileType=getFileType(options, infile)
+    if options.chunk is None:
+        if options.splits is None:
+            sys.exit("Please tell me how many chunks (-N) or how big (-C)!")
+        options.chunk=getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
+    return fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase, splitOnSize=options.splitOnSize, suffix=suffix)
+
+def getFileType(options, infile):
+    """
+    figure out how to split up the input file and return a FileType object with the necessary info.
+
+    The options paramter is assumed to be an object with the following values:
+        .infileType (None or a string indicating the input file type)
+        .pattern (None or a regex pattern to find a record boundary)
+        .numLines (None or an integer number of lines per record)
+    if all of the above are None, the extension of the name in infile is used to guess
+    """
+    if options.pattern is not None:
+        if options.numLines is not None:
+            logging.error("Cannot use BOTH pattern and number of lines to split records!")
+            raise Exception("Conflicting options: pattern and numLines")
+
+
+    # if there is a file type, use that (And override if other options present)
+    if options.infileType is not None:
+        fileType = fileTypeMap[options.infileType]
+        if fileType.sepRE is not None:
+            logging.info('Using user chosen "%s" pattern to split files: /%s/' % (options.infileType, fileType.sepRE.pattern))
+        else:
+            logging.info('Using user chosen "%s" number of lines (%d) to split files' % (options.infileType, fileType.numLines))
+    else:
+        fileType=None
+
+    if options.pattern is not None:
+        sepRE = re.compile(options.pattern)
+        logging.info('Using user supplied pattern to split files: /%s/' % (options.pattern))
+        if fileType is None:
+            fileType=FragmentableFileType(name=options.pattern,sepRE=sepRE)
+        else:
+            fileType.sepRE=sepRE
+            fileType.numLines=None
+    elif options.numLines is not None:
+        logging.info('Using user supplied number of lines to split files: /%s/' % (options.numLines))
+        if fileType is None:
+            fileType=FragmentableFileType(str(options.numLines), numLines=options.numLines)
+        else:
+            logging.info("Overriding record line count (%d)!" % (options.numLines))
+            fileType.sepRE=None
+            fileType.numLines=options.numLines
+    elif fileType is None:
+        # try to guess from the extension
+        if infile is None:
+            sys.exit("We cannot infer the record separator from the filename when using standar input. Please specify the input file type with -T or a pattern to match the first line with -p")
+        fileType = getTypeFromFileName(infile)
+        if fileType.sepRE is not None:
+            logging.info('File looks like %s, using pattern to split files: /%s/' % (fileType.name, fileType.sepRE.pattern))
+        else:
+            logging.info('File looks like %s, using number of lines (%d) to split files' % (fileType.name, fileType.numLines))
+    return fileType
+
+def getTypeFromFileName(filename):
+    """
+    find the file's extension in the fileExtensionMap
+    return the separator RE for that file type
+
+    If file not recognized, inform user how to set the pattern manually
+    """
+    ext = os.path.splitext(filename)[1]
+    fileType = fileExtensionMap.get(ext,None)
+    if fileType is not None:
+        return fileType
+    else:
+        logging.warn("""Cannot guess type of %s!
+
+The input file does not have a recognized extension:
+%s
+
+You must manually set the file type with '-T TYPE' where TYPE is in:
+%s
+OR set the record separator pattern with '-p PATTERN' where PATTERN is a regular expression. E.G. '^>" for fasta, or '^LOCUS' for gbk.
+""" % (filename, fileExtensionMap.keys(), fileExtensionMap.keys()))
+        sys.exit(65)
+
+def getSizePerChunk(infile, splits, fileType, splitOnSize=False):
+    """
+    Get total size of all records and return target size for each chunk to end up with number of chunks specified by 'splits'
+    """
+    if infile is None:
+        raise Exception("We cannot determine chunk size from STDIN!")
+
+    if splitOnSize:
+        # get a custom function that returns the size of this type of record
+        recordSizer=fileType.sizer
+    else:
+        # just return 1 for each record
+        recordSizer=recordCounter
+
+    # loop through records
+    inhandle = openInputFile(infile)
+    totalSize = 0
+    for record in fileType.recordStreamer(inhandle):
+        totalSize+=recordSizer(record)
+    inhandle.close()
+
+    return calculateChunkSize(totalSize,splits)
+
+def calculateChunkSize(size,splits):
+    """
+    how big should the fragments be?
+    """
+    chunk = int(ceil(size/float(splits)))
+    logging.info("Setting chunk to: %d=ceil(%d/%d)" % (chunk,size,splits))
+    return chunk
+
+# Simply count records
+recordCounter=lambda x: 1
+
+def defaultRecordSizer(recordLines):
+    """
+    return the total number of characters in the record text
+    """
+    size=0
+    for line in recordLines:
+        size+=len(line)
+    return size
+
+def fastaRecordSizer(recordLines):
+    """
+    Returns the number of charcters in every line excluding:
+        the first (header) line
+        whitespace at the start and end of lines
+    """
+    size=0
+    for i in xrange(1,len(recordLines)):
+        size+=len(recordLines[i].strip())
+    return size
+
+def fastqRecordSizer(recordLines):
+    """
+    Returns the number of charaters in the lines between the sequence header (@) and the quality header (@) excluding whitespace at the start and end of lines
+    """
+    size=0
+    for i in xrange(1,len(recordLines)):
+        line=recordLines[i]
+        if len(line)>0 and line[0]=='+':
+            return size
+        size+=len(line.strip())
+
+    logging.warn("Did not find quality line in record: %s" % recordLines)
+    return size
+
+def gbRecordSizer(recordLines):
+    """
+    uses biopython to parse record
+    """
+    from Bio import SeqIO
+    record = SeqIO.read(recordLines,'genbank')
+    return len(record)
+
+def fragmentInputBySize(infile, tmpdir, chunk, fileType, fragmentBase, splitOnSize=True, suffix='.in'):
+    """
+    Break up input into files of size chunk in tmpdir. Return number of fragments.
+    """
+    logging.debug("Fragmenting input: %r" % ({'infile':infile,'tmpDir':tmpdir,'chunk':chunk,'base':fragmentBase}))
+    inhandle = openInputFile(infile)
+    num = fragmentInputStreamBySize(inhandle, tmpdir, chunk, fileType, fragmentBase, splitOnSize=splitOnSize, suffix=suffix)
+    if infile is not None:
+        inhandle.close()
+    return num
+
+def fragmentInputStreamBySize(inhandle, tmpdir, chunk, fileType, fragmentBase, splitOnSize=True, suffix='.in'):
+    if splitOnSize:
+        # get a custom function that returns the size of this type of record
+        recordSizer=fileType.sizer
+    else:
+        # just return 1 for each record
+        recordSizer=lambda x: 1
+
+    count=0
+    num=1
+    tmpFileName=getFragmentPath(tmpdir,fragmentBase,num,suffix)
+    #logging.debug('Writing fragment (%d,%d,%d): %s' % (chunk,count,num,tmpFileName))
+    tmpFile = open(tmpFileName, 'w')
+    for record in fileType.recordStreamer(inhandle):
+        recordSize=recordSizer(record)
+        count+=recordSize
+
+        if count>chunk:
+            # close previous chunk and open new one
+            tmpFile.close
+            num+=1
+            tmpFileName=getFragmentPath(tmpdir,fragmentBase,num,suffix)
+            #logging.debug('Writing fragment (%d,%d,%d): %s' % (chunk,count,num,tmpFileName))
+            tmpFile = open(tmpFileName, 'w')
+            count=recordSize
+
+        # write record
+        tmpFile.writelines(record)
+
+    tmpFile.close()
+
+    return num
+
+def getFragmentPath(directory, base, index, suffix='.in'):
+    return "%s%s%s" % (directory, os.sep, getFragmentName(base,index,suffix=suffix))
+
+def getFragmentName(base, index, suffix='.in'):
+    return "%s%05d%s" % (base, index, suffix)
+
+def getFragmentPrefix(base,index):
+    return getFragmentName(base,index,suffix='.pre')
+
+def formatCommand(command):
+    """
+    given a list of command elements, print string approximating what you'd type at a shell prompt
+    """
+    cmdstr=""
+    logging.debug(repr(command))
+    for arg in command:
+        if " " in arg:
+            cmdstr=cmdstr+" \""+arg+"\""
+        else:
+            cmdstr=cmdstr+" "+arg
+    return cmdstr
+
+def regexRecordGenerator(fileType, stream):
+    """
+    Using the sepRE setting in fileType, break the input stream into records
+    """
+    lastRecord=[]
+    for line in stream:
+        if fileType.sepRE.match(line):
+            if len(lastRecord)>0:
+                yield lastRecord
+                del lastRecord[:]
+        lastRecord.append(line)
+
+    if len(lastRecord)>0:
+        yield lastRecord
+
+def linedRecordGenerator(fileType, stream):
+    """
+    Using the numLines setting in fileType, break the input stream into records
+    """
+    lastRecord=[]
+    for index,line in enumerate(stream):
+        if index%fileType.numLines==0:
+            if len(lastRecord)>0:
+                yield lastRecord
+                del lastRecord[:]
+        lastRecord.append(line)
+
+    if len(lastRecord)>0:
+        yield lastRecord
+
+def addFragmentingOptions(parser,defaults={"splits":400}):
+    parser.add_option("-L", "--recordLines", metavar="NUMLINES", dest='numLines', default=None, type="int",
+                       help="Number of lines per record")
+    parser.add_option("-P", "--pattern", metavar="PATTERN", dest='pattern', default=None,
+                       help="Regular expression to split records")
+    parser.add_option("-T","--infileType", dest='infileType', default=None,
+                      choices=fileTypeMap.keys(),
+                      help='Type of input file. Otherwise, choose by extension. Known types are: %choices')
+    parser.add_option("-C", "--chunkSize", type="int", dest='chunk',  metavar="FRAG_SIZE",
+                      help="The number of records per fragment. Overrides NUM_FRAGS")
+    default=defaults.get("splits",None)
+    parser.add_option("-N", "--numChunks", dest='splits', type='int', metavar="NUM_FRAGS", default=default,
+                      help="The number of fragments to create (defaults to %default)")
+    parser.add_option("-s", "--splitOnSize",  default=False, action='store_true',
+                      help="create chunks based on record size, not number of records. For known sequence types (fasta, fastq, gb), sequence length is used, otherwize the full size of the record text is counted")
+
+#################
+# Classes
+#################
+class FragmentableFileType:
+    def __init__(self, name, sepRE=None, numLines=None, sizer=None):
+        self.name=name
+        self.sepRE=sepRE
+        if sepRE is not None:
+            self._recordStreamer=regexRecordGenerator
+        self.numLines=numLines
+        if numLines is not None:
+            self._recordStreamer=linedRecordGenerator
+        if sizer==None:
+            self.sizer=defaultRecordSizer
+        else:
+            self.sizer=sizer
+
+    def recordStreamer(self, stream):
+        return self._recordStreamer(self, stream)
+
+##################
+# Constants from edl.batch
+##################
+FASTA=FragmentableFileType('fasta',sizer=fastaRecordSizer,sepRE=re.compile(r'^>(\S+)'))
+FASTQ=FragmentableFileType('fastq',sizer=fastqRecordSizer,numLines=4)
+GENBANK=FragmentableFileType('gb',sizer=gbRecordSizer,sepRE=re.compile(r'^LOCUS'))
+TABLE=FragmentableFileType('table',sepRE=re.compile(r'^'))
+fileTypeMap={FASTA.name:FASTA,
+             FASTQ.name:FASTQ,
+             GENBANK.name:GENBANK,
+             TABLE.name:TABLE,
+            }
+fileExtensionMap={'.fa':FASTA,
+                  '.fna':FASTA,
+                  '.faa':FASTA,
+                  '.ffn':FASTA,
+                  '.fasta':FASTA,
+                  '.fastq':FASTQ,
+                  '.gb':GENBANK,
+                  '.gbk':GENBANK,
+                  '.gbff':GENBANK,
+                  '.gpff':GENBANK,
+                  '.tab':TABLE,
+                  '.tsv':TABLE,
+                  '.csv':TABLE,
+                  '.m8':TABLE,
+                 }
 
 def main():
     ## set up CLI
@@ -64,7 +459,7 @@ outputs.""")
     addFragmentingOptions(parser)
     parser.add_option("-X", "--queue", default=SGE, 
                       choices=[SGE,SLURM,LOCAL],
-                      help="""What type of scheduler to use: 'SGE' (default), 'SLURM', or 'LOCAL' (just use threads and command-line)""")
+                      help="""What type of scheduler to use: 'sge' (default), 'slurm', or 'local' (just use threads and command-line)""")
     parser.add_option("-R", "--throttle", default=0, type='int',
             help="Limit number of simultaneously executing fragemnts to given number. Default: 0 => unlimited")
     parser.add_option("-w", "--wait", default=False, action='store_true',
@@ -496,41 +891,83 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
     command+=cmdargs
 
     # redirect qsub output to std, silence if vebose is 0
+    #if options.verbose==0:
+    #    qsubOuts=open(os.devnull,'w')
+    #else:
+    #    qsubOuts=errStream
+    
+    # run command
+    logging.debug('Launching task array: %s' % (formatCommand(command)))
+    try:
+        submissionOutput=subprocess.check_output(command)
+        if options.verbose>0:
+            errStream.write(submissionOutput)
+    except subprocess.CalledProcessError as error:
+        if options.wait and options.queue != SLURM:
+            # when using -sync y, the exit code may come from a task
+            #  (which cleanup will handle)
+            logging.warn("qsub returned an error code of: %d" 
+                    % error.returncode)
+        else:
+            raise error
+
+    # get job id
+    try:
+        jobid = re.search(r'(\d+)\s*$',submissionOutput).group(1)
+        options.jobid = jobid
+    except:
+        if options.queue==SLURM:
+            logging.error("Cannot parse SLURM job id from '%s'" % (submissionOutput))
+            raise
+
+    # SLURM doesn't allow waiting for completion on array jobs, so we hack:
+    #  use srun to start a dummy job that will wait for our job array
+    if options.wait and options.queue==SLURM:
+        waitForSlurmArray(options, errStream)
+
+def waitForSlurmArray(options, errStream):
+
+    # redirect qsub output to std, silence if vebose is 0
     if options.verbose==0:
         qsubOuts=open(os.devnull,'w')
     else:
         qsubOuts=errStream
 
-    # run command
-    logging.debug('Launching task array: %s' % (formatCommand(command)))
-    exitcode=subprocess.call(command, stdout=qsubOuts)
-    if exitcode!=0:
-        if options.wait:
-            # when using -sync y, the exit code may come from a task
-            #  (which cleanup will handle)
-            logging.warn("qsub returned an error code of: %d" % exitcode)
-        else:
-            raise subprocess.CalledProcessError(exitcode, command)
+    command=["srun",]
+    command+=["--dependency=afterany:%s" % (options.jobid),]
+    #if isinstance(options.sgeOptions,str):
+    #    command+=shlex.split(options.sgeOptions)
+    #else:
+    #    command+=options.sgeOptions
 
-def getSubmissionCommandPrefix(options, cleanup=False):
+    command += ["true"]
+
+    logging.debug('Launching command to wait: %s' % (formatCommand(command)))
+    exitcode=subprocess.call(command, stdout=qsubOuts)
+
+    if exitcode!=0:
+        raise subprocess.CalledProcessError(exitcode, command)
+
+
+def getSubmissionCommandPrefix(options, cleanupFile=None):
     """
     Generate the SGE or SLURM submission prefix (as a list of strings). 
     """
     submitData={}
     #priority
     priority=options.priority
-    if cleanup:
+    if cleanupFile is not None:
         priority = min(0,priority)
     else:
         priority = min(-1,priority-10)
     submitData['priority']=str(priority)
 
     # job name and output files
-    if cleanup:
+    if cleanupFile is not None:
         submitData['jobName']="%s.cleanup" % (options.jobName)
-        submitData['output']="%s.cleanup.out" % (fileNameBase)
-        submitData['error']="%s.cleanup.err" % (fileNameBase)
-        submitData['waitfor']=options.jobName
+        submitData['output']="%s.cleanup.out" % (cleanupFile)
+        submitData['error']="%s.cleanup.err" % (cleanupFile)
+        submitData['waitfor']=options.jobName if options.queue != SLURM else options.jobid
     else:
         submitData['jobName']=options.jobName
         submitData['output']="%s%stasks.out" %(options.tmpDir, os.sep)
@@ -552,9 +989,9 @@ def getSubmissionCommandPrefix(options, cleanup=False):
             submitData['options']=options.sgeOptions
 
     if options.queue==SGE:
-        return getSGECommandPrefix(options, submitData)
+        return getSGECommandPrefix(submitData)
     else:
-        return getSLURMCommandPrefix(options, submitData)
+        return getSLURMCommandPrefix(submitData)
 
 def getSLURMCommandPrefix(submitData):
     command=["sbatch",]
@@ -564,7 +1001,7 @@ def getSLURMCommandPrefix(submitData):
     #command+=["-p",submitData['priority']]
     command+=["--job-name=%s" % (submitData['jobName']),
               "--output=%s" % (submitData['output']),
-              "--error=S5" % (submitData['error'])]
+              "--error=%s" % (submitData['error'])]
     if 'tasks' in submitData:
         taskSpec = submitData['tasks']
         if 'throttle' in submitData:
@@ -608,7 +1045,7 @@ def launchCleanup(options, cmdargs, errStream=sys.stderr):
 
     # build command
     # sge
-    command = getSubmissionCommandPrefix(options, cleanup=True)
+    command = getSubmissionCommandPrefix(options, cleanupFile=fileNameBase)
     
     # cleanup
     command+=[BATCHLAUNCHER,'--tmp_dir',options.tmpDir,'--frag_base',options.fragBase,'--mode','cleanup','--numChunks',str(options.splits), '--loglevel', str(options.verbose), '--retries', str(options.retries),'--jobName',options.jobName, '--chunk', str(options.chunk), '--queue', options.queue]
@@ -1210,7 +1647,7 @@ def runFragment(options, cmdargs, taskNum=None):
     #if options.queue != LOCAL:
     if taskNum is None:
         # get the task number from env
-        taskNum=getSGETaskId()
+        taskNum=getTaskId(options)
 
     hostname=getHostName()
     logFile="%s%stask%05d.%s.log" % (localDir,os.sep,taskNum,hostname)
@@ -1669,6 +2106,15 @@ def getThreadCountForSGENode(hostname, errStream):
         logging.warn("Could not parse qhost output:\n%s" % (qhout))
     return slots
 
+def getTaskId(options):
+    if options.queue==SGE:
+        return getSGETaskId()
+    else:
+        return getSLURMTaskId()
+
+def getSLURMTaskId():
+    return int(os.environ.get('SLURM_ARRAY_TASK_ID',1))
+
 def getSGETaskId():
     return int(os.environ.get('SGE_TASK_ID',1))
 
@@ -2042,397 +2488,3 @@ relativePathRE=re.compile(r'^\.\.?\/')
 if __name__ == '__main__':
     main()
 
-############
-# edl.batch
-#import tempfile, re, os, logging, sys
-#import numpy as np
-#from edl.util import openInputFile
-############
-
-def checkTmpDir(tmpDir,jobName):
-    """
-    Make sure tmp dir is empty.
-    Create it if necessary.
-    If name is None, create dir name based on job name
-    """
-    if tmpDir is None or tmpDir=="":
-        tmpDir=tempfile.mkdtemp(suffix=jobName,dir=".")
-    else:
-        if os.path.exists(tmpDir):
-            raise Exception("Temporary directory already exists! (%s)" % (tmpDir))
-        else:
-            os.makedirs(tmpDir)
-
-    logging.debug("Created temporary directory: %s" % tmpDir)
-    return tmpDir
-
-def fragmentInput(infile, options, tmpdir, fragmentBase, suffix='.in'):
-    """
-    Wraps the following methods into one:
-        getFileType(options, infile)
-        getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
-        fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase,   splitOnSize=options.splitOnSize, suffix=)
-    """
-    fileType=getFileType(options, infile)
-    if options.chunk is None:
-        if options.splits is None:
-            sys.exit("Please tell me how many chunks (-N) or how big (-C)!")
-        options.chunk=getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
-    return fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase, splitOnSize=options.splitOnSize, suffix=suffix)
-
-def getFileType(options, infile):
-    """
-    figure out how to split up the input file and return a FileType object with the necessary info.
-
-    The options paramter is assumed to be an object with the following values:
-        .infileType (None or a string indicating the input file type)
-        .pattern (None or a regex pattern to find a record boundary)
-        .numLines (None or an integer number of lines per record)
-    if all of the above are None, the extension of the name in infile is used to guess
-    """
-    if options.pattern is not None:
-        if options.numLines is not None:
-            logging.error("Cannot use BOTH pattern and number of lines to split records!")
-            raise Exception("Conflicting options: pattern and numLines")
-
-
-    # if there is a file type, use that (And override if other options present)
-    if options.infileType is not None:
-        fileType = fileTypeMap[options.infileType]
-        if fileType.sepRE is not None:
-            logging.info('Using user chosen "%s" pattern to split files: /%s/' % (options.infileType, fileType.sepRE.pattern))
-        else:
-            logging.info('Using user chosen "%s" number of lines (%d) to split files' % (options.infileType, fileType.numLines))
-    else:
-        fileType=None
-
-    if options.pattern is not None:
-        sepRE = re.compile(options.pattern)
-        logging.info('Using user supplied pattern to split files: /%s/' % (options.pattern))
-        if fileType is None:
-            fileType=FragmentableFileType(name=options.pattern,sepRE=sepRE)
-        else:
-            fileType.sepRE=sepRE
-            fileType.numLines=None
-    elif options.numLines is not None:
-        logging.info('Using user supplied number of lines to split files: /%s/' % (options.numLines))
-        if fileType is None:
-            fileType=FragmentableFileType(str(options.numLines), numLines=options.numLines)
-        else:
-            logging.info("Overriding record line count (%d)!" % (options.numLines))
-            fileType.sepRE=None
-            fileType.numLines=options.numLines
-    elif fileType is None:
-        # try to guess from the extension
-        if infile is None:
-            sys.exit("We cannot infer the record separator from the filename when using standar input. Please specify the input file type with -T or a pattern to match the first line with -p")
-        fileType = getTypeFromFileName(infile)
-        if fileType.sepRE is not None:
-            logging.info('File looks like %s, using pattern to split files: /%s/' % (fileType.name, fileType.sepRE.pattern))
-        else:
-            logging.info('File looks like %s, using number of lines (%d) to split files' % (fileType.name, fileType.numLines))
-    return fileType
-
-def getTypeFromFileName(filename):
-    """
-    find the file's extension in the fileExtensionMap
-    return the separator RE for that file type
-
-    If file not recognized, inform user how to set the pattern manually
-    """
-    ext = os.path.splitext(filename)[1]
-    fileType = fileExtensionMap.get(ext,None)
-    if fileType is not None:
-        return fileType
-    else:
-        logging.warn("""Cannot guess type of %s!
-
-The input file does not have a recognized extension:
-%s
-
-You must manually set the file type with '-T TYPE' where TYPE is in:
-%s
-OR set the record separator pattern with '-p PATTERN' where PATTERN is a regular expression. E.G. '^>" for fasta, or '^LOCUS' for gbk.
-""" % (filename, fileExtensionMap.keys(), fileExtensionMap.keys()))
-        sys.exit(65)
-
-def getSizePerChunk(infile, splits, fileType, splitOnSize=False):
-    """
-    Get total size of all records and return target size for each chunk to end up with number of chunks specified by 'splits'
-    """
-    if infile is None:
-        raise Exception("We cannot determine chunk size from STDIN!")
-
-    if splitOnSize:
-        # get a custom function that returns the size of this type of record
-        recordSizer=fileType.sizer
-    else:
-        # just return 1 for each record
-        recordSizer=recordCounter
-
-    # loop through records
-    inhandle = openInputFile(infile)
-    totalSize = 0
-    for record in fileType.recordStreamer(inhandle):
-        totalSize+=recordSizer(record)
-    inhandle.close()
-
-    return calculateChunkSize(totalSize,splits)
-
-def calculateChunkSize(size,splits):
-    """
-    how big should the fragments be?
-    """
-    chunk = int(ceil(size/float(splits)))
-    logging.info("Setting chunk to: %d=ceil(%d/%d)" % (chunk,size,splits))
-    return chunk
-
-# Simply count records
-recordCounter=lambda x: 1
-
-def defaultRecordSizer(recordLines):
-    """
-    return the total number of characters in the record text
-    """
-    size=0
-    for line in recordLines:
-        size+=len(line)
-    return size
-
-def fastaRecordSizer(recordLines):
-    """
-    Returns the number of charcters in every line excluding:
-        the first (header) line
-        whitespace at the start and end of lines
-    """
-    size=0
-    for i in xrange(1,len(recordLines)):
-        size+=len(recordLines[i].strip())
-    return size
-
-def fastqRecordSizer(recordLines):
-    """
-    Returns the number of charaters in the lines between the sequence header (@) and the quality header (@) excluding whitespace at the start and end of lines
-    """
-    size=0
-    for i in xrange(1,len(recordLines)):
-        line=recordLines[i]
-        if len(line)>0 and line[0]=='+':
-            return size
-        size+=len(line.strip())
-
-    logging.warn("Did not find quality line in record: %s" % recordLines)
-    return size
-
-def gbRecordSizer(recordLines):
-    """
-    uses biopython to parse record
-    """
-    from Bio import SeqIO
-    record = SeqIO.read(recordLines,'genbank')
-    return len(record)
-
-def fragmentInputBySize(infile, tmpdir, chunk, fileType, fragmentBase, splitOnSize=True, suffix='.in'):
-    """
-    Break up input into files of size chunk in tmpdir. Return number of fragments.
-    """
-    logging.debug("Fragmenting input: %r" % ({'infile':infile,'tmpDir':tmpdir,'chunk':chunk,'base':fragmentBase}))
-    inhandle = openInputFile(infile)
-    num = fragmentInputStreamBySize(inhandle, tmpdir, chunk, fileType, fragmentBase, splitOnSize=splitOnSize, suffix=suffix)
-    if infile is not None:
-        inhandle.close()
-    return num
-
-def fragmentInputStreamBySize(inhandle, tmpdir, chunk, fileType, fragmentBase, splitOnSize=True, suffix='.in'):
-    if splitOnSize:
-        # get a custom function that returns the size of this type of record
-        recordSizer=fileType.sizer
-    else:
-        # just return 1 for each record
-        recordSizer=lambda x: 1
-
-    count=0
-    num=1
-    tmpFileName=getFragmentPath(tmpdir,fragmentBase,num,suffix)
-    #logging.debug('Writing fragment (%d,%d,%d): %s' % (chunk,count,num,tmpFileName))
-    tmpFile = open(tmpFileName, 'w')
-    for record in fileType.recordStreamer(inhandle):
-        recordSize=recordSizer(record)
-        count+=recordSize
-
-        if count>chunk:
-            # close previous chunk and open new one
-            tmpFile.close
-            num+=1
-            tmpFileName=getFragmentPath(tmpdir,fragmentBase,num,suffix)
-            #logging.debug('Writing fragment (%d,%d,%d): %s' % (chunk,count,num,tmpFileName))
-            tmpFile = open(tmpFileName, 'w')
-            count=recordSize
-
-        # write record
-        tmpFile.writelines(record)
-
-    tmpFile.close()
-
-    return num
-
-def getFragmentPath(directory, base, index, suffix='.in'):
-    return "%s%s%s" % (directory, os.sep, getFragmentName(base,index,suffix=suffix))
-
-def getFragmentName(base, index, suffix='.in'):
-    return "%s%05d%s" % (base, index, suffix)
-
-def getFragmentPrefix(base,index):
-    return getFragmentName(base,index,suffix='.pre')
-
-def formatCommand(command):
-    """
-    given a list of command elements, print string approximating what you'd type at a shell prompt
-    """
-    cmdstr=""
-    logging.debug(repr(command))
-    for arg in command:
-        if " " in arg:
-            cmdstr=cmdstr+" \""+arg+"\""
-        else:
-            cmdstr=cmdstr+" "+arg
-    return cmdstr
-
-def regexRecordGenerator(fileType, stream):
-    """
-    Using the sepRE setting in fileType, break the input stream into records
-    """
-    lastRecord=[]
-    for line in stream:
-        if fileType.sepRE.match(line):
-            if len(lastRecord)>0:
-                yield lastRecord
-                del lastRecord[:]
-        lastRecord.append(line)
-
-    if len(lastRecord)>0:
-        yield lastRecord
-
-def linedRecordGenerator(fileType, stream):
-    """
-    Using the numLines setting in fileType, break the input stream into records
-    """
-    lastRecord=[]
-    for index,line in enumerate(stream):
-        if index%fileType.numLines==0:
-            if len(lastRecord)>0:
-                yield lastRecord
-                del lastRecord[:]
-        lastRecord.append(line)
-
-    if len(lastRecord)>0:
-        yield lastRecord
-
-def addFragmentingOptions(parser,defaults={"splits":400}):
-    parser.add_option("-L", "--recordLines", metavar="NUMLINES", dest='numLines', default=None, type="int",
-                       help="Number of lines per record")
-    parser.add_option("-P", "--pattern", metavar="PATTERN", dest='pattern', default=None,
-                       help="Regular expression to split records")
-    parser.add_option("-T","--infileType", dest='infileType', default=None,
-                      choices=fileTypeMap.keys(),
-                      help='Type of input file. Otherwise, choose by extension. Known types are: %choices')
-    parser.add_option("-C", "--chunkSize", type="int", dest='chunk',  metavar="FRAG_SIZE",
-                      help="The number of records per fragment. Overrides NUM_FRAGS")
-    default=defaults.get("splits",None)
-    parser.add_option("-N", "--numChunks", dest='splits', type='int', metavar="NUM_FRAGS", default=default,
-                      help="The number of fragments to create (defaults to %default)")
-    parser.add_option("-s", "--splitOnSize",  default=False, action='store_true',
-                      help="create chunks based on record size, not number of records. For known sequence types (fasta, fastq, gb), sequence length is used, otherwize the full size of the record text is counted")
-
-#################
-# Classes
-#################
-class FragmentableFileType:
-    def __init__(self, name, sepRE=None, numLines=None, sizer=None):
-        self.name=name
-        self.sepRE=sepRE
-        if sepRE is not None:
-            self._recordStreamer=regexRecordGenerator
-        self.numLines=numLines
-        if numLines is not None:
-            self._recordStreamer=linedRecordGenerator
-        if sizer==None:
-            self.sizer=defaultRecordSizer
-        else:
-            self.sizer=sizer
-
-    def recordStreamer(self, stream):
-        return self._recordStreamer(self, stream)
-
-##################
-# Constants
-##################
-FASTA=FragmentableFileType('fasta',sizer=fastaRecordSizer,sepRE=re.compile(r'^>(\S+)'))
-FASTQ=FragmentableFileType('fastq',sizer=fastqRecordSizer,numLines=4)
-GENBANK=FragmentableFileType('gb',sizer=gbRecordSizer,sepRE=re.compile(r'^LOCUS'))
-TABLE=FragmentableFileType('table',sepRE=re.compile(r'^'))
-fileTypeMap={FASTA.name:FASTA,
-             FASTQ.name:FASTQ,
-             GENBANK.name:GENBANK,
-             TABLE.name:TABLE,
-            }
-fileExtensionMap={'.fa':FASTA,
-                  '.fna':FASTA,
-                  '.faa':FASTA,
-                  '.ffn':FASTA,
-                  '.fasta':FASTA,
-                  '.fastq':FASTQ,
-                  '.gb':GENBANK,
-                  '.gbk':GENBANK,
-                  '.gbff':GENBANK,
-                  '.gpff':GENBANK,
-                  '.tab':TABLE,
-                  '.tsv':TABLE,
-                  '.csv':TABLE,
-                  '.m8':TABLE,
-                 }
-
-###########
-# edl.util (selected functions)
-#import re, logging, sys, os
-#from edl.expressions import accessionRE
-#logger=logging.getLogger(__name__)
-##########
-def countBasesInFasta(fastaFile):
-    """
-    Given a fasta file, return a dict where the number of records and the total number of bases are given by 'records' and 'bases' respectively.
-    """
-    recordRE=re.compile(r'^>')
-    whiteSpaceRE=re.compile(r'\s+')
-    totalBases=0
-    totalSeqs=0
-    with open(fastaFile) as f:
-        for line in f:
-            if recordRE.match(line):
-                totalSeqs+=1
-                continue
-            totalBases+=len(whiteSpaceRE.sub('',line))
-
-urlRE=re.compile(r'[a-z]+\:\/\/')
-def openInputFile(infile, *args):
-    """
-    return input stream. Allow for text, gzipped text, or standard input if None given.
-    """
-    if infile is None:
-        logging.info("Reading input from STDIN")
-        return sys.stdin
-
-    if isinstance(infile, str):
-        if urlRE.match(infile):
-            import urllib2
-            return urllib2.urlopen(infile)
-        if len(infile)>3 and infile[-3:]=='.gz':
-            import gzip
-            return gzip.GzipFile(infile,'rb')
-        elif len(infile)>4 and infile[-4:]=='.bz2':
-            import bz2
-            return bz2.BZ2File(infile,'rb')
-        else:
-            return open(infile,'rU')
-    else:
-        return infile
