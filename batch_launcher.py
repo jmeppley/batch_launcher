@@ -510,11 +510,6 @@ outputs.""")
         print description
         exit(0)
 
-    # If running a sub-job, do so before logging is set up
-    if options.mode=='run':
-        exitcode=runFragment(options, cmdargs)
-        sys.exit(exitcode)
-
     # if running launcher or cleanup, standard logging
     if options.verbose==0:
         loglevel=logging.ERROR
@@ -525,11 +520,16 @@ outputs.""")
     elif options.verbose>=3:
         loglevel=logging.DEBUG
 
-    if options.logToFile:
+    if options.logToFile and options.mode != 'run':
         logStream=io.BytesIO()
     else:
         logStream=sys.stderr
     logging.basicConfig(stream=logStream, level=loglevel)
+
+    # If running a sub-job, do so now
+    if options.mode=='run':
+        exitcode=runFragment(options, cmdargs)
+        sys.exit(exitcode)
 
     # cleanup only?
     if options.mode=='cleanup':
@@ -620,7 +620,11 @@ outputs.""")
     # launch cleanup
     if options.wait or options.queue == LOCAL:
         # if wait, then we already waited for jobs to finish, just run cleanup
-        exitcode=cleanup(options, cmdargs)
+        if options.verbose<=3:
+            exitcode=cleanup(options, cmdargs)
+        else:
+            logging.warn("Debugging level is high, so skipping cleanup and leaving temporary files in place")
+            sys.exit(0)
         sys.exit(exitcode)
     else:
         # otherwise, launch cleanup task to wait for processing to finish
@@ -873,7 +877,7 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
 
     # batch_runner command
     command.append(BATCHLAUNCHER)
-    command+=["--mode","run","--tmp_dir",options.tmpDir,"--frag_base", options.fragBase, "--loglevel", str(options.verbose)]
+    command+=["--mode","run","--tmp_dir",options.tmpDir,"--frag_base", options.fragBase, "--loglevel", str(options.verbose), "--queue", options.queue]
     if options.inputFlag is not None:
         command+=['-i',str(options.inputFlag)]
     if options.prefixFlag is not None:
@@ -2113,10 +2117,15 @@ def getTaskId(options):
         return getSLURMTaskId()
 
 def getSLURMTaskId():
+    logging.debug("SLURM_ARRAY_TASK_ID: %s" % os.environ.get('SLURM_ARRAY_TASK_ID',None))
+    logging.debug("SLURM_ARRAY_JOB_ID: %s" % os.environ.get('SLURM_ARRAY_JOB_ID',None))
+    logging.debug("SLURM_JOBID: %s" % os.environ.get('SLURM_JOBID',None))
     return int(os.environ.get('SLURM_ARRAY_TASK_ID',1))
 
 def getSGETaskId():
-    return int(os.environ.get('SGE_TASK_ID',1))
+    taskid = int(os.environ.get('SGE_TASK_ID',1))
+    logging.debug("getting SGE task id (%d)" % (taskid))
+    return taskid
 
 def getHostName():
     try:
