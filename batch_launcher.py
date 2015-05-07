@@ -29,6 +29,9 @@ The script will try to recognize the record type of the input file based on its 
 SGE='sge'
 SLURM='slurm'
 LOCAL='local'
+AUTO='auto'
+queueBinaryMap={SGE:'qsub',
+                SLURM:'sbatch'}
 
 from optparse import OptionParser
 import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, Queue
@@ -457,9 +460,9 @@ outputs.""")
 
     # ways to customize batch behavior
     addFragmentingOptions(parser)
-    parser.add_option("-X", "--queue", default=SGE, 
-                      choices=[SGE,SLURM,LOCAL],
-                      help="""What type of scheduler to use: 'sge' (default), 'slurm', or 'local' (just use threads and command-line)""")
+    parser.add_option("-X", "--queue", default=AUTO, 
+                      choices=[SGE,SLURM,LOCAL,AUTO],
+                      help="""What type of scheduler to use: 'sge', 'slurm', or 'local' (just use threads and command-line). By default, it will check for the qsub (from sge)  and sbatch (from slurm) binaries in the PATH and go with the first one found.""")
     parser.add_option("-R", "--throttle", default=0, type='int',
             help="Limit number of simultaneously executing fragemnts to given number. Default: 0 => unlimited")
     parser.add_option("-w", "--wait", default=False, action='store_true',
@@ -588,6 +591,10 @@ outputs.""")
         parser.error("We can use STDIN only if a chunk size is given!")
 
     if options.queue != LOCAL:
+        if options.queue == AUTO:
+            # auto-detect
+            options.queue = lookForQueueingCommands()
+
         options.sgeOptions = sgeOptions
         logging.debug("Adding the following submit options to task array command: '%s'" % sgeOptions)
 
@@ -629,6 +636,26 @@ outputs.""")
     else:
         # otherwise, launch cleanup task to wait for processing to finish
         launchCleanup(options, cmdargs, errStream=logStream)
+
+def lookForQueueingCommands():
+    """
+    Look for qsub and sbatch in the execution path and return the first found queueing system
+    """
+    for queue, binary in queueBinaryMap.iteritems():
+        if checkForBinary(binary):
+            return queue
+    else:
+        raise Exception("Cannot locate a queueing system. None of these executables were found in your PATH: %s" % (queueBinaryMap.values(),))
+
+def checkForBinary(binary):
+    """
+    Look for binary with `which`.
+    """
+    try:
+        fullPath = subprocess.check_output(['which',binary])
+        return True
+    except subprocess.CalledProcessError as e:
+        return False
 
 def getJobName(programPath=None):
     """
