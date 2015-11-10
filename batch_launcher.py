@@ -1,5 +1,5 @@
-#!/usr/bin/python
-#$ -S /usr/bin/python
+#!/home/jmeppley/pkg/bin/python
+#$ -S /home/jmeppley/pkg/bin/python
 """
 Run (almost) any command in parallel across a cluster (using SGE or SLURM) or on a single server. The only requirement is that the input file can be broken into pieces (using regex or line counts). Many bioinformatics file types (fasta, fastq, gbk) are implicitly understood. The resulting output fragments will simply be concatenated.
 
@@ -932,7 +932,7 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
     try:
         submissionOutput=subprocess.check_output(command)
         if options.verbose>0:
-            errStream.write(submissionOutput)
+            errStream.write("Submission Output: " + submissionOutput)
     except subprocess.CalledProcessError as error:
         if options.wait and options.queue != SLURM:
             # when using -sync y, the exit code may come from a task
@@ -1014,10 +1014,10 @@ def getSubmissionCommandPrefix(options, cleanupFile=None):
             submitData['throttle']=str(options.throttle)
         if options.wait:
             submitData['sync']=True
-        if isinstance(options.sgeOptions,str):
-            submitData['options']=shlex.split(options.sgeOptions)
-        else:
-            submitData['options']=options.sgeOptions
+    if isinstance(options.sgeOptions,str):
+        submitData['options']=shlex.split(options.sgeOptions)
+    else:
+        submitData['options']=options.sgeOptions
 
     if options.queue==SGE:
         return getSGECommandPrefix(submitData)
