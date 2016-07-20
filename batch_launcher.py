@@ -1,5 +1,5 @@
-#!/home/jmeppley/pkg/bin/python
-#$ -S /home/jmeppley/pkg/bin/python
+#!/usr/bin/env python
+#$ -S /usr/bin/python
 """
 Run (almost) any command in parallel across a cluster (using SGE or SLURM) or on a single server. The only requirement is that the input file can be broken into pieces (using regex or line counts). Many bioinformatics file types (fasta, fastq, gbk) are implicitly understood. The resulting output fragments will simply be concatenated.
 
@@ -992,6 +992,7 @@ def getSubmissionCommandPrefix(options, cleanupFile=None):
     else:
         priority = min(-1,priority-10)
     submitData['priority']=str(priority)
+    submitData['interpreter']=PYTHON
 
     # job name and output files
     if cleanupFile is not None:
@@ -1046,6 +1047,7 @@ def getSLURMCommandPrefix(submitData):
 
 def getSGECommandPrefix(submitData):
     command=["qsub", "-hard", "-cwd", "-V"]
+    command+=["-S",submitData['interpreter']]
     command+=["-p",submitData['priority']]
     if 'waitfor' in submitData:
         command+=["-hold_jid", submitData['waitfor']]
@@ -2377,6 +2379,7 @@ def applyDefaultsToCommand(command,taskType,prepend=False):
 # Constants
 ##################
 BATCHLAUNCHER=os.path.abspath(__file__)
+PYTHON=sys.executable
 #BATCHLAUNCHER=os.sep.join([BINDIR,'batch_launcher.py'])
 scriptingLanguages=['perl','python','ruby','sh']
 # task types
