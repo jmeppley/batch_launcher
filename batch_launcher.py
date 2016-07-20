@@ -2459,7 +2459,7 @@ defaultsForTask={BLAST:{'-b':'10','-v':'10','-a':'8'},
                 }
 unsupportedOptions={}
 flagsWithArguments={GLIMMERMG:['--iter','-p','-t','-i','-q','-r','-s','-u','--fudge','--taxlevel','--minbp_pct'],
-                    LAST:['-a','-b','-c','-d','-e','-F','-p','-q','-r','-x','-y','-z','-f','-k','-l','-m','-n','-s','-i','-u','-t','-j','-Q','-g','-G','-o'],
+                    LAST:['-P','-a','-b','-c','-d','-e','-F','-p','-q','-r','-x','-y','-z','-f','-k','-l','-m','-n','-s','-i','-u','-t','-j','-Q','-g','-G','-o'],
                    }
 
 taskSpecificCopy={}
