@@ -707,7 +707,7 @@ def prepareCommandForBatch(cmdargs,options):
             translatePositionalArgs(options,cmdargs,relativePositions)
 
     (positionalArgs,flaggedArgs)=getOptionHashes(options)
-    logging.debug("positional args: %s form %s" % (positionalArgs,options.inputFlag))
+    logging.debug("positional args: %s from %s" % (positionalArgs,options.inputFlag))
 
     unsupportedFlags=unsupportedOptions.get(taskType,{}).keys()
 
@@ -752,6 +752,15 @@ def prepareCommandForBatch(cmdargs,options):
 
         # reset
         nextArgument=None
+
+    # Quit if the user specified arguments are not found
+    unused_flags = set(positionalArgs).difference(usedFlags)\
+                     .union(set(flaggedArgs).difference(usedFlags))
+    if len(unused_flags)>0:
+        raise Exception("Unable to find the following arguments in the " + \
+                         "command: '%s'" % "', '" \
+                          .join("pos "+str(f) if isinstance(f,int) else f \
+                                 for f in unused_flags))
 
     # remove any prefix based output flags if no pref
     if prefix is None and options.outputFlags is not None:
