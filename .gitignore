@@ -58,3 +58,8 @@ target/
 
 # vim
 *.sw[nop]
+
+# my tests
+*.local
+*.sge
+*.slurm
