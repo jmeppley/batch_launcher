@@ -1,5 +1,5 @@
-#!/home/jmeppley/pkg/bin/python
-#$ -S /home/jmeppley/pkg/bin/python
+#!/usr/bin/env python
+#$ -S /usr/bin/python
 """
 Run (almost) any command in parallel across a cluster (using SGE or SLURM) or on a single server. The only requirement is that the input file can be broken into pieces (using regex or line counts). Many bioinformatics file types (fasta, fastq, gbk) are implicitly understood. The resulting output fragments will simply be concatenated.
 
@@ -34,8 +34,8 @@ queueBinaryMap={SGE:'qsub',
                 SLURM:'sbatch'}
 
 from optparse import OptionParser
-import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, Queue
-from numpy import ceil
+import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, queue
+from math import ceil
 
 ###########
 # edl.util (selected functions)
@@ -193,7 +193,7 @@ The input file does not have a recognized extension:
 You must manually set the file type with '-T TYPE' where TYPE is in:
 %s
 OR set the record separator pattern with '-p PATTERN' where PATTERN is a regular expression. E.G. '^>" for fasta, or '^LOCUS' for gbk.
-""" % (filename, fileExtensionMap.keys(), fileExtensionMap.keys()))
+""" % (filename, list(fileExtensionMap.keys()), list(fileExtensionMap.keys())))
         sys.exit(65)
 
 def getSizePerChunk(infile, splits, fileType, splitOnSize=False):
@@ -246,7 +246,7 @@ def fastaRecordSizer(recordLines):
         whitespace at the start and end of lines
     """
     size=0
-    for i in xrange(1,len(recordLines)):
+    for i in range(1,len(recordLines)):
         size+=len(recordLines[i].strip())
     return size
 
@@ -255,7 +255,7 @@ def fastqRecordSizer(recordLines):
     Returns the number of charaters in the lines between the sequence header (@) and the quality header (@) excluding whitespace at the start and end of lines
     """
     size=0
-    for i in xrange(1,len(recordLines)):
+    for i in range(1,len(recordLines)):
         line=recordLines[i]
         if len(line)>0 and line[0]=='+':
             return size
@@ -374,7 +374,7 @@ def addFragmentingOptions(parser,defaults={"splits":400}):
     parser.add_option("-P", "--pattern", metavar="PATTERN", dest='pattern', default=None,
                        help="Regular expression to split records")
     parser.add_option("-T","--infileType", dest='infileType', default=None,
-                      choices=fileTypeMap.keys(),
+                      choices=list(fileTypeMap.keys()),
                       help='Type of input file. Otherwise, choose by extension. Known types are: %choices')
     parser.add_option("-C", "--chunkSize", type="int", dest='chunk',  metavar="FRAG_SIZE",
                       help="The number of records per fragment. Overrides NUM_FRAGS")
@@ -488,7 +488,7 @@ outputs.""")
     parser.add_option("-m", "--mode", default='launch', metavar='MODE',
                       choices=['launch','run','cleanup'],
                       help="Only used internally to lauch tasks in SGE or SLURM")
-    parser.add_option("-Z","--taskType",default=None, choices=taskTypePatterns.keys(),
+    parser.add_option("-Z","--taskType",default=None, choices=list(taskTypePatterns.keys()),
                       help="only for task running: what type of task is this? Will be ignored in inital call")
 
     # other
@@ -510,7 +510,7 @@ outputs.""")
     (options, cmdargs) = parser.parse_args()
 
     if options.about:
-        print description
+        print (description)
         exit(0)
 
     # if running launcher or cleanup, standard logging
@@ -641,7 +641,7 @@ def lookForQueueingCommands():
     """
     Look for qsub and sbatch in the execution path and return the first found queueing system
     """
-    for queue, binary in queueBinaryMap.iteritems():
+    for queue, binary in queueBinaryMap.items():
         if checkForBinary(binary):
             return queue
     else:
@@ -781,7 +781,7 @@ def translatePositionalArgs(options,cmdargs,checkMap):
         start=1
     positionMap=[]
     skipNext=False
-    for i in xrange(start,len(cmdargs)):
+    for i in range(start,len(cmdargs)):
         if skipNext:
             skipNext=False
             continue
@@ -831,7 +831,7 @@ def checkCommand(command,sgeOptions,batchOptions):
         program = command[1]
 
     # do we know this program?
-    for (taskType,taskProgRE) in taskTypePatterns.iteritems():
+    for (taskType,taskProgRE) in taskTypePatterns.items():
         m=taskProgRE.search(program)
         if m:
             logging.info("Program recognized as type: %s" % (taskType))
@@ -853,10 +853,10 @@ def launchLocalJobs(options, cmdargs, errStream):
     numThreads = min(numTasks,options.throttle) if options.throttle>0 else numTasks
 
     # Create thread safe object to report errors to
-    errorQueue = Queue.Queue()
+    errorQueue = queue.Queue()
 
     # create tasks
-    taskQueue = Queue.Queue()
+    taskQueue = queue.Queue()
     for i in range(1,numTasks+1):
         taskQueue.put(FragmentTask(options, cmdargs, i, errorQueue))
 
@@ -873,7 +873,7 @@ def launchLocalJobs(options, cmdargs, errStream):
     # Check for any errors
     try:
         exitcode=errorQueue.get(False)
-    except Queue.Empty:
+    except queue.Empty:
         # no errors
         return
 
@@ -1141,7 +1141,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
         if os.path.exists(file):
             logging.debug('Removing previous file: %s' % file)
             os.remove(file)
-    for file in outFileByFlag.itervalues():
+    for file in outFileByFlag.values():
         if file is not None:
             if os.path.exists(file):
                 logging.debug('Removing previous file: %s' % file)
@@ -1151,7 +1151,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
     copyFilesToStream=taskSpecificCopy.get(options.taskType,addFilesToStream)
 
     # loop until everything is node or we give up
-    taskIds=xrange(1,options.splits+1)
+    taskIds=range(1,options.splits+1)
     errStream = None
     failureStream = None
     while True:
@@ -1188,7 +1188,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
             outfragmap={}
 
             # For each configured output file, map fragment to final
-            for (flag, flagOutFile) in outFileByFlag.iteritems():
+            for (flag, flagOutFile) in outFileByFlag.items():
                 if flag=='%stdout':
                     outfragmap[outfrag]=flagOutFile
                 else:
@@ -1213,7 +1213,8 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
                             addFileToStream(errfrag,errStream,header="## STDERR from fragment %d:" % (i))
 
                     # delete files (input, error, outputs)
-                    for f in [frag, outfrag, errfrag, logfrag] + outfragmap.keys():
+                    for f in [frag, outfrag, errfrag, logfrag] \
+                            + list(outfragmap.keys()):
                         if os.path.exists(f):
                             anyFile=True
                             os.remove(f)
@@ -1277,7 +1278,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
         logging.info("Cleanup is done scanning output files: rtrs: %d, aS: %s, fT: %d, mR: %d" % (options.retries, anySuccess, len(failedTasks), len(missingRecords)))
 
         # close output streams
-        for outstream in outfragmap.itervalues():
+        for outstream in outfragmap.values():
             if outstream is sys.stdout:
                 continue
             if isinstance(outstream,list):
@@ -1317,7 +1318,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
                 launchJobs(options, cmdargs, errStream=errStream)
 
                 # set up list of fragments to check on next cleanup pass
-                taskIds = xrange(1,nextTaskNum)
+                taskIds = range(1,nextTaskNum)
 
             else:
                 # everything is complete
@@ -1403,7 +1404,7 @@ def moveNewFragmentsToTmpDir(options,nextTaskNum):
     """
     Move new fragments from tmpDir/tmp/ into tmpDir/
     """
-    for i in xrange(1,nextTaskNum):
+    for i in range(1,nextTaskNum):
         frag = getFragmentPath(options.tmpDir, options.fragBase, i)
         newfrag = getFragmentPath("%s%stmp" % (options.tmpDir, os.sep), options.fragBase, i)
         os.rename(newfrag,frag)
@@ -1515,7 +1516,7 @@ def addBlastFilesToStream(fileMap,fragIndex,inputFragment):
                 records[m.group(1)]=False
 
     # assume only one output file for blast
-    outFragment=fileMap.keys()[0]
+    outFragment=next(iter(fileMap.keys()))
     outStream=getStream(fileMap[outFragment])
 
     # scan file and write good records to output
@@ -2197,7 +2198,7 @@ def inspectFrHitCommand(command,taskType,sgeOptions,commandBin,batchOptions):
         logging.debug("next word is: %s" % nextWordIs)
 
     # apply anydefaults not already in command
-    for kvPair in defaultValues.iteritems():
+    for kvPair in defaultValues.items():
         command.extend(kvPair)
 
     # get total bases in reference db
@@ -2267,7 +2268,7 @@ def inspectBlastCommand(command,taskType,sgeOptions,blastBin,batchOptions):
         logging.debug("next word is: %s" % nextWordIs)
 
     # apply anydefaults not already in command
-    for kvPair in defaultValues.iteritems():
+    for kvPair in defaultValues.items():
         command.extend(kvPair)
 
     if dbs:
@@ -2281,13 +2282,13 @@ def inspectBlastCommand(command,taskType,sgeOptions,blastBin,batchOptions):
         if program not in ('blastx','blastn','blastp','tblastn','tblastx'):
             raise Exception("Blast algorithm %s is not recognized" % (program))
     elif blastBin in ['rpstblastn','rpsblast']:
-		pass
+        pass
 
 def makeRelativePathsAbsolute(cmdargs):
     """
     Translate any relative paths (starting with ./ or ../) to absolute
     """
-    for i in xrange(len(cmdargs)):
+    for i in range(len(cmdargs)):
         if relativePathRE.match(cmdargs[i]):
             cmdargs[i]=os.path.abspath(cmdargs[i])
 
@@ -2365,12 +2366,12 @@ def applyDefaultsToCommand(command,taskType,prepend=False):
     # apply anydefaults not already in command
     if prepend:
         index=1
-        for kvPair in defaultValues.iteritems():
+        for kvPair in defaultValues.items():
             command.insert(index,kvPair[1])
             command.insert(index,kvPair[0])
             index+=2
     else:
-        for kvPair in defaultValues.iteritems():
+        for kvPair in defaultValues.items():
             command.extend(kvPair)
 
 ##################
@@ -2406,7 +2407,7 @@ programOptionMap={BLAST:{'in':'-i',
                            'threads':'-p',
                           },
                   LAST:{'in':2,
-                        'out':['-o']},
+                        'out':['%stdout']},
                   GLIMMERMG:{'in':1,
                              'out':['%p.predict','%E.predict'],
                              'prefix':'-o',
@@ -2452,7 +2453,7 @@ defaultsForTask={BLAST:{'-b':'10','-v':'10','-a':'8'},
                  METARNA:{'-H':'/common/bin/hmmer-3.0',
                           '-L':'/common/bin/meta_rna/rRNA_hmm_fs_wst_v0/HMM3'},
                  FRHIT:{'-r':'25','-T':'0'},
-                 LAST:{'-b':'1','-f':'0',"-n":'10'},
+                 LAST:{'-f':'BlastTab'},
                 }
 unsupportedOptions={}
 flagsWithArguments={GLIMMERMG:['--iter','-p','-t','-i','-q','-r','-s','-u','--fudge','--taxlevel','--minbp_pct'],
@@ -2496,7 +2497,7 @@ class FragmentThread( threading.Thread ):
                 task = self.queue.get(True,10)
                 task.run()
                 self.queue.task_done()
-            except Queue.Empty:
+            except queue.Empty:
                 # quit if the queue is empty
                 break
             
