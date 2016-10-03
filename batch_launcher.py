@@ -106,20 +106,6 @@ def checkTmpDir(tmpDir,jobName):
     logging.debug("Created temporary directory: %s" % tmpDir)
     return tmpDir
 
-def fragmentInput(infile, options, tmpdir, fragmentBase, suffix='.in'):
-    """
-    Wraps the following methods into one:
-        getFileType(options, infile)
-        getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
-        fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase,   splitOnSize=options.splitOnSize, suffix=)
-    """
-    fileType=getFileType(options, infile)
-    if options.chunk is None:
-        if options.splits is None:
-            sys.exit("Please tell me how many chunks (-N) or how big (-C)!")
-        options.chunk=getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
-    return fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase, splitOnSize=options.splitOnSize, suffix=suffix)
-
 def getFileType(options, infile):
     """
     figure out how to split up the input file and return a FileType object with the necessary info.
@@ -271,6 +257,53 @@ def gbRecordSizer(recordLines):
     from Bio import SeqIO
     record = SeqIO.read(recordLines,'genbank')
     return len(record)
+
+def fragmentInput(infile, options, fragmentBase, suffix='.in'):
+    """
+    Wraps the following methods into one:
+        getFileType(options, infile)
+        getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
+        fragmentInputBySize(infile, tmpdir, options.chunk, fileType, fragmentBase,   splitOnSize=options.splitOnSize, suffix=)
+    """
+    fileType=getFileType(options, infile)
+    # if we had to get from file name, save:
+    if options.infileType is None and options.pattern is None and options.numLines is None:
+        options.infileType = fileType.name
+
+    dont_fragment=False
+    if options.chunk is None:
+        if options.splits is None:
+            options.splits=DEFAULT_SPLITS
+        if options.splits==1:
+            # Don't split if one fragment requested
+            dont_fragment=True
+        options.chunk=getSizePerChunk(infile, options.splits, fileType, splitOnSize=options.splitOnSize)
+
+    # fragment input file
+    if dont_fragment:
+        # Just symlink to tmp_dir
+        logging.debug("Since only one fragment requested, entire source file will be linked to tmp_dir")
+        link_source_into_tmp(infile, options.tmpDir, options.fragBase)
+        return 1
+    else:
+        return fragmentInputBySize(infile, 
+                                   options.tmpDir, 
+                                   options.chunk, 
+                                   fileType, 
+                                   options.fragBase, 
+                                   splitOnSize=options.splitOnSize)
+
+def link_source_into_tmp(infile, tmpdir, fragmentBase,
+                          suffix='.in'):
+    """
+    create symlink in tmp dir that points to input file
+    """
+    logging.debug("Linking input input: %r" % ({'infile':infile,
+                                                'tmpDir':tmpdir,
+                                                'base':fragmentBase}))
+    tmpFileName=getFragmentPath(tmpdir,fragmentBase,1,suffix)
+    os.link(infile, tmpFileName)
+    return 1
 
 def fragmentInputBySize(infile, tmpdir, chunk, fileType, fragmentBase, splitOnSize=True, suffix='.in'):
     """
@@ -603,23 +636,11 @@ outputs.""")
             if not(options.wait):
                 parser.error("Piping output to stdout only works if we wait for the jobs to finish. Please use wait (-w) or fix your output flags (-o)")
 
-
-    fileType = getFileType(options,infile)
-    # if we had to get from file name, save:
-    if options.infileType is None and options.pattern is None and options.numLines is None:
-        options.infileType = fileType.name
-
     # get temporary dir
     options.tmpDir = checkTmpDir(options.tmpDir,options.jobName)
 
-    # get fragment size if we haven't been told
-    if options.chunk is None:
-        if options.splits is None:
-            options.splits=DEFAULT_SPLITS
-        options.chunk = getSizePerChunk(infile,options.splits,fileType,splitOnSize=options.splitOnSize)
-
-    # fragment input file
-    options.splits=fragmentInputBySize(infile, options.tmpDir, options.chunk, fileType, options.fragBase, splitOnSize=options.splitOnSize)
+    # create fragmented version of input in temp folder
+    options.splits=fragmentInput(infile, options, options.fragBase)
 
     # launch task array
     launchJobs(options,cmdargs,errStream=logStream)
