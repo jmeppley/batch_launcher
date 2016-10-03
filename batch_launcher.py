@@ -941,7 +941,7 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
     try:
         submissionOutput=subprocess.check_output(command)
         if options.verbose>0:
-            errStream.write("Submission Output: " + submissionOutput)
+            errStream.write("Submission Output: " + submissionOutput.decode())
     except subprocess.CalledProcessError as error:
         if options.wait and options.queue != SLURM:
             # when using -sync y, the exit code may come from a task
