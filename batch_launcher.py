@@ -524,7 +524,7 @@ outputs.""")
         loglevel=logging.DEBUG
 
     if options.logToFile and options.mode != 'run':
-        logStream=io.BytesIO()
+        logStream=io.StringIO()
     else:
         logStream=sys.stderr
     logging.basicConfig(stream=logStream, level=loglevel)
@@ -549,7 +549,7 @@ outputs.""")
     if not options.ignore:
         # Inspect command, get any special options for task runner and update sgeOptions
         options.taskType = checkCommand(cmdargs,sgeOptions,options)
-        logging.debug('Task type is: %s' % (options.taskType))
+        logging.debug('Task type is: %s' % (str(options.taskType)))
 
         # if any flag not supplied by user, check for defaults based on taskType
         # first, there must be a task type:
@@ -707,7 +707,7 @@ def prepareCommandForBatch(cmdargs,options):
             translatePositionalArgs(options,cmdargs,relativePositions)
 
     (positionalArgs,flaggedArgs)=getOptionHashes(options)
-    logging.debug("positional args: %s from %s" % (positionalArgs,options.inputFlag))
+    logging.debug("positional args: %s from %s" % (str(positionalArgs),options.inputFlag))
 
     unsupportedFlags=unsupportedOptions.get(taskType,{}).keys()
 
@@ -737,7 +737,7 @@ def prepareCommandForBatch(cmdargs,options):
 
         if nextArgument=='in':
             infile=cmdargs[i]
-            logging.debug("Found infile (%s) in arg %d" % (infile,i))
+            logging.debug("Found infile (%s) in arg %d" % (str(infile),i))
         elif nextArgument=='prefix':
             prefix=cmdargs[i]
             logging.debug("Found prefix (%s) in arg %d" % (prefix,i))
@@ -829,7 +829,7 @@ def checkCommand(command,sgeOptions,batchOptions):
     if len(command)==0:
         raise Exception("No command given. Add ' -- ' followed by the command you'd like to run!")
 
-    logging.debug("Command: %r" % (command))
+    logging.debug("Command: %r" % (repr(command)))
 
     # get program name
     program=command[0]
@@ -1162,7 +1162,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
     copyFilesToStream=taskSpecificCopy.get(options.taskType,addFilesToStream)
 
     # loop until everything is node or we give up
-    taskIds=range(1,options.splits+1)
+    taskIds=list(range(1,options.splits+1))
     errStream = None
     failureStream = None
     while True:
@@ -1329,7 +1329,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
                 launchJobs(options, cmdargs, errStream=errStream)
 
                 # set up list of fragments to check on next cleanup pass
-                taskIds = range(1,nextTaskNum)
+                taskIds = list(range(1,nextTaskNum))
 
             else:
                 # everything is complete
@@ -2042,7 +2042,7 @@ def prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs, ho
 
     # were there any outputFlags not in the command? These indicate secondary files
     #logging.debug("Done with positional arguments in prepareCommandForFragment")
-    otherOutputs=range(1,namedOutCount+1)
+    otherOutputs=list(range(1,namedOutCount+1))
     if options.outputFlags is not None:
         for flag in options.outputFlags:
             if isinstance(flag, str) and flag not in usedFlags:
