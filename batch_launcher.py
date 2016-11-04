@@ -26,6 +26,7 @@ Additionally, if any output file is a directory, the final output will be a dire
 
 The script will try to recognize the record type of the input file based on its extension. If it can't you will have to either supply a regex pattern to split the file on (-p "^>" for fasta, -p "^LOCUS" for gbk, etc) or manually set the file type (eg: -T fasta).
 """
+version="batch_launcher 0.1.0"
 SGE='sge'
 SLURM='slurm'
 LOCAL='local'
@@ -535,12 +536,18 @@ outputs.""")
                       help="Suppress warnings. Only print fatal messages")
     parser.add_option("-V","--loglevel", type='int', dest="verbose",
                      help="Shortcut to set verbosity directly")
+    parser.add_option("--version", dest="version", default=False,
+                    action="store_true", help="print version")
     parser.add_option("-A", "--about",
                   action="store_true", dest="about", default=False,
                   help="Print description")
 
 
     (options, cmdargs) = parser.parse_args()
+
+    if options.version:
+        print (version)
+        exit(0)
 
     if options.about:
         print (description)
