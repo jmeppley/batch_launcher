@@ -63,3 +63,5 @@ target/
 *.local
 *.sge
 *.slurm
+.tst.*
+.batch_launcher
