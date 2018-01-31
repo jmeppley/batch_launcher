@@ -26,7 +26,7 @@ Additionally, if any output file is a directory, the final output will be a dire
 
 The script will try to recognize the record type of the input file based on its extension. If it can't you will have to either supply a regex pattern to split the file on (-p "^>" for fasta, -p "^LOCUS" for gbk, etc) or manually set the file type (eg: -T fasta).
 """
-version="batch_launcher 0.1.0"
+version="batch_launcher 1.0.0"
 SGE='sge'
 SLURM='slurm'
 LOCAL='local'
