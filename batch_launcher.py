@@ -79,7 +79,7 @@ def openInputFile(infile, *args):
             import bz2
             return bz2.BZ2File(infile,'rb')
         else:
-            return open(infile,'rU')
+            return open(infile,'rt')
     else:
         return infile
 
@@ -654,7 +654,10 @@ Given an input file with multiple records, an output file, and a command: proces
     option_group.add_argument("-Z","--taskType",default=None, choices=list(taskTypePatterns.keys()),
                       help="only for task running: what type of task is this? Will be ignored in inital call")
 
-    (options, cmdargs) = parser.parse_args()
+    parser.add_argument("command", nargs="*")
+
+    options = parser.parse_args()
+    cmdargs = options.command
 
     if options.version:
         print (version)
@@ -1668,7 +1671,7 @@ def reBasedRecordGenerator(taskType,records,infile):
     recordIDRE=recordIDRE[taskType]
     currentRecord=None
     currentData=[]
-    with open(infile,'rU') as f:
+    with open(infile,'rt') as f:
         for line in f:
             m=recordIDRE.match(line)
             if m:
@@ -1735,7 +1738,7 @@ def addBlastFilesToStream(fileMap,fragIndex,inputFragment):
     # get list of reads from input fragment
     records={}
     fastaRecordRE=fileTypeMap['fasta'].sepRE
-    with open(inputFragment,'rU') as f:
+    with open(inputFragment,'rt') as f:
         for line in f:
             m=fastaRecordRE.match(line)
             if m:
@@ -1749,7 +1752,7 @@ def addBlastFilesToStream(fileMap,fragIndex,inputFragment):
     currentRecord=None
     currentRecordOutput=[]
     state=START
-    with open(outFragment,'rU') as f:
+    with open(outFragment,'rt') as f:
         line=f.next()
         if blastHeaderRE.match(line):
             state=HEADER
@@ -1858,7 +1861,7 @@ def addFileToStream(filename, outstream, header=None, outputIsDir=False):
         outstream.write(header)
         outstream.write('\n')
 
-    with open(filename, 'rU') as f:
+    with open(filename, 'rt') as f:
         for line in f:
             outstream.write(line)
 
@@ -1974,7 +1977,7 @@ def runFragment(options, cmdargs, taskNum=None):
         if foundI:
             spin=None
         else:
-            spin=open(infragment,'rU')
+            spin=open(infragment,'rt')
         spout=open(stdoutLocal,'w')
         sperr=open(stderrLocal,'w')
         # environment
