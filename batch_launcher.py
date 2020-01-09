@@ -34,7 +34,7 @@ AUTO='auto'
 queueBinaryMap={SGE:'qsub',
                 SLURM:'sbatch'}
 
-from optparse import OptionParser
+import argparse
 import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, queue
 from math import ceil
 
@@ -471,27 +471,30 @@ def linedRecordGenerator(fileType, stream):
         yield lastRecord
 
 def addFragmentingOptions(parser, defaults={"splits":400}):
-    option_group = parser.add_option_group('Fragmenting Options')
+    option_group = parser.add_argument_group('Fragmenting Options')
 
-    option_group.add_option("-L", "--recordLines", metavar="NUMLINES", dest='numLines', default=None, type="int",
+    option_group.add_argument("-L", "--recordLines", metavar="NUMLINES",
+                              dest='numLines', default=None, type=int,
                        help="Number of lines per record")
-    option_group.add_option("-P", "--pattern", metavar="PATTERN", dest='pattern', default=None,
+    option_group.add_argument("-P", "--pattern", metavar="PATTERN", dest='pattern', default=None,
                        help="Regular expression to split records")
-    option_group.add_option("-T","--infileType", dest='infileType', default=None,
-                      choices=list(fileTypeMap.keys()),
-                      help='Type of input file. Otherwise, choose by extension. Known types are: %choices')
-    option_group.add_option("-C", "--chunkSize", type="int", dest='chunk',  metavar="FRAG_SIZE",
+    choices = list(fileTypeMap.keys())
+    option_group.add_argument("-T","--infileType", dest='infileType', default=None,
+                              help='Type of input file. Otherwise, choose by '
+                              'extension. Known types are: ' + 
+                              ','.join(choices))
+    option_group.add_argument("-C", "--chunkSize", type=int, dest='chunk',  metavar="FRAG_SIZE",
                       help="The number of records per fragment. Overrides NUM_FRAGS")
     default=defaults.get("splits",None)
-    option_group.add_option("-N", "--numChunks", dest='splits', type='int', metavar="NUM_FRAGS", default=default,
-                      help="The number of fragments to create (defaults to %default)")
-    option_group.add_option("-s", "--splitOnSize",  default=False, action='store_true',
+    option_group.add_argument("-N", "--numChunks", dest='splits', type=int, metavar="NUM_FRAGS", default=default,
+                      help="The number of fragments to create (defaults to %s)"
+                             % (default,))
+    option_group.add_argument("-s", "--splitOnSize",  default=False, action='store_true',
                       help="create chunks based on record size, not number of records. For known sequence types (fasta, fastq, gb), sequence length is used, otherwize the full size of the record text is counted")
-    option_group.add_option("-K", "--keepFragments", default=False,
+    option_group.add_argument("-K", "--keepFragments", default=False,
                             action='store_true',
                             help=("keep fragments for later re-use (useful for"
                                   "HMMs)"))
-
 #################
 # Classes
 #################
@@ -549,51 +552,56 @@ def main():
     description = """
 Given an input file with multiple records, an output file, and a command: process the records in parallel across a cluster or multiprocesser server.
     """
-    parser = OptionParser(usage, description=description)
-    parser.add_option("--version", dest="version", default=False,
+    parser = argparse.ArgumentParser(usage, description=description)
+    parser.add_argument("--version", dest="version", default=False,
                     action="store_true", help="print version")
-    parser.add_option("-A", "--about",
+    parser.add_argument("-A", "--about",
                   action="store_true", dest="about", default=False,
                   help="Print description")
 
     # logging
-    option_group = parser.add_option_group('Logging Options')
-    option_group.add_option("-l", "--logToFile", default=False, action="store_true",
+    option_group = parser.add_argument_group('Logging Options')
+    option_group.add_argument("-l", "--logToFile", default=False, action="store_true",
                       help="print logging messages to file")
-    option_group.add_option("-v", "--verbose",
+    option_group.add_argument("-v", "--verbose",
                       action="count", dest="verbose", default=1,
                       help="Print log messages. Use twice for debugging")
-    option_group.add_option("-q", '--quiet', dest='verbose',
+    option_group.add_argument("-q", '--quiet', dest='verbose',
                       action="store_const", const=0,
                       help="Suppress warnings. Only print fatal messages")
-    option_group.add_option("-V","--loglevel", type='int', dest="verbose",
+    option_group.add_argument("-V","--loglevel", type=int, dest="verbose",
                      help="Shortcut to set verbosity directly")
-
     # options for processing command
-    option_group = parser.add_option_group('Command Parsing Options')
-    option_group.add_option("-G", "--ignore", default=False, action='store_true',
+    option_group = parser.add_argument_group('Command Parsing Options')
+    option_group.add_argument("-G", "--ignore", default=False, action='store_true',
     help="Do not perform checks based on the program name (in the command). Batch_launcher will skip need you to indicate input/output/threads with -i,-o, and -t, and it will skip any program specific processing (e.g. db checks for blast)")
-    option_group.add_option("-i", "--inputFlag", metavar="FLAG",
+    option_group.add_argument("-i", "--inputFlag", metavar="FLAG",
                       help="Indicate where in command to find the input file to fragment. The value can be an option flag (eg '-i' or '-fasta') or a number indicating a positional argument. Only needed if program in command is not recognized.")
-    option_group.add_option("-o", "--outputFlags", action='append',metavar='FLAG',
-                      help="""Indicate where in command (or not) to find the output file.
-The value can be an option flag or positional argument (as with -i, above), a file
-name (if the command always produces the same output file), '%e.EXT' if the output file
-is the input file with a new extension (e.g. %e.faa), '%a.ext' if the output file is the
-input fie with an additional extension, or '%s/foo/bar/' if the output file is the input
-file with a regexp substitution. Multiple values are permitted to account for multiple
-outputs.""")
-    option_group.add_option("-p", "--prefixFlag",
-                      help="Indicate where in command to find a prefix for output files. Output extension flags '%p.ext' indicate that the output file will be PREFIX.ext.")
-    option_group.add_option("-t", "--threadsFlag", metavar="FLAG",
+    option_group.add_argument("-o", "--outputFlags", action='append',metavar='FLAG',
+                      help="Indicate where in command (or not) to find the "
+                           "output file. The value can be an option flag or "
+                           "positional argument (as with -i, above), a file "
+                           "name (if the command always produces the same "
+                           "output file), '%%e.EXT' if the output file "
+                           "is the input file with a new extension (e.g. "
+                           "%%e.faa), '%%a.ext' if the output file is the "
+                           "input fie with an additional extension, or "
+                           "'%%s/foo/bar/' if the output file is the input "
+                           "file with a regexp substitution. Multiple values "
+                           "are permitted to account for multiple outputs.")
+    option_group.add_argument("-p", "--prefixFlag",
+                      help="Indicate where in command to find a prefix for "
+                           "output files. Output extension flags '%%p.ext' "
+                           "indicate that the output file will be PREFIX.ext.")
+    option_group.add_argument("-t", "--threadsFlag", metavar="FLAG",
                       help="Option to use to tell command how many threads to use")
-    option_group.add_option("-H", "--relative_path", metavar='FLAG',
+    option_group.add_argument("-H", "--relative_path", metavar='FLAG',
                             action='append', dest='rel_paths',
                             help="Use the same syntax as -o or -i to indicate " 
                             "elements in the command that are relative "
                             "paths. These will need to be made absolute when "
                             "the command is run in a temp folder.")
-    option_group.add_option("--frag_prep", metavar='COMMAND', default=None,
+    option_group.add_argument("--frag_prep", metavar='COMMAND', default=None,
                             help="command to run on fragments. Can be used "
                             "to fragment databases instead of queries. "
                             " Include place holder '{}' for file name. "
@@ -606,45 +614,45 @@ outputs.""")
     addFragmentingOptions(parser)
 
     # way to customize execution
-    option_group = parser.add_option_group('Fragment Execution Options')
-    option_group.add_option("-X", "--queue", default=AUTO, 
+    option_group = parser.add_argument_group('Fragment Execution Options')
+
+    option_group.add_argument("-X", "--queue", default=AUTO, 
                       choices=[SGE,SLURM,LOCAL,AUTO],
-                      help="""What type of scheduler to use: 'sge', 'slurm', or 'local' (just use threads and command-line). By default, it will check for the qsub (from sge)  and sbatch (from slurm) binaries in the PATH and go with the first one found.""")
-    option_group.add_option("-R", "--throttle", default=0, type='int',
+                      help="What type of scheduler to use: 'sge', 'slurm', or 'local' (just use threads and command-line). By default, it will check for the qsub (from sge)  and sbatch (from slurm) binaries in the PATH and go with the first one found.")
+    option_group.add_argument("-R", "--throttle", default=0, type=int,
             help="Limit number of simultaneously executing fragemnts to given number. Default: 0 => unlimited")
-    option_group.add_option("-w", "--wait", default=False, action='store_true',
+    option_group.add_argument("-w", "--wait", default=False, action='store_true',
                       help="Wait for jobs to finish before exiting script (only when using SGE)")
-    option_group.add_option("-c","--cwd",dest='cwd',
+    option_group.add_argument("-c","--cwd",dest='cwd',
                       default=False,action='store_true',
                       help='Run fragment in current directory, otherwise it will be executed in the tmp location (as configured in Python, usu a local disk like /tmp) of the node (which is good for programs like softnerry that create lots of temporary files)')
-    option_group.add_option("-r","--retries",default=-1,type='int',
+    option_group.add_argument("-r","--retries",default=-1, type=int,
                       help='number of times to resubmit failed tasks. Less than zero (the default) means continue as long as some new results come through each time')
 
-    option_group = parser.add_option_group('Advanced Fragment Execution Options')
-    option_group.add_option("-j", "--jobName", metavar="STRING",
+    option_group = parser.add_argument_group('Advanced Fragment Execution Options')
+    option_group.add_argument("-j", "--jobName", metavar="STRING",
                       help="String for naming queued tasks")
-    option_group.add_option("-d", "--tmp_dir", dest='tmpDir',
+    option_group.add_argument("-d", "--tmp_dir", dest='tmpDir',
                       help="Temporary directory for files")
-    option_group.add_option("-S", "--submitOptions", default=None, dest='sgeOptions',
+    option_group.add_argument("-S", "--submitOptions", default=None, dest='sgeOptions',
                       help="Option string to add to SGE or SLURM command")
-    option_group.add_option("-n", "--priority", default=0, type='int',
+    option_group.add_argument("-n", "--priority", default=0, type=int,
                       help="Adjust priority of sub-tasks, only applies to SGE")
 
     # primarily used when calling self
-    option_group = parser.add_option_group('Internal Use Only')
-    option_group.add_option("-f", "--frag_base", dest="fragBase", default=None,
+    option_group = parser.add_argument_group('Internal Use Only')
+    option_group.add_argument("-f", "--frag_base", dest="fragBase", default=None,
                      help=("naming base for input file fragments"
                            "('file.fragment')"))
-    option_group.add_option("--frag_dir", dest="frag_dir", default=None,
+    option_group.add_argument("--frag_dir", dest="frag_dir", default=None,
                      help=("folder with input fragments"))
-    option_group.add_option("--frag_suffix", dest="fragSuff", default=None,
+    option_group.add_argument("--frag_suffix", dest="fragSuff", default=None,
                      help=("naming suffix for input file fragments"))
-    option_group.add_option("-m", "--mode", default='launch', metavar='MODE',
+    option_group.add_argument("-m", "--mode", default='launch', metavar='MODE',
                       choices=['launch','run','cleanup'],
                       help="Only used internally to lauch tasks in SGE or SLURM")
-    option_group.add_option("-Z","--taskType",default=None, choices=list(taskTypePatterns.keys()),
+    option_group.add_argument("-Z","--taskType",default=None, choices=list(taskTypePatterns.keys()),
                       help="only for task running: what type of task is this? Will be ignored in inital call")
-
 
     (options, cmdargs) = parser.parse_args()
 
@@ -2664,7 +2672,7 @@ def applyDefaultsToCommand(command,taskType,prepend=False):
 BATCHLAUNCHER=os.path.abspath(__file__)
 PYTHON=sys.executable
 #BATCHLAUNCHER=os.sep.join([BINDIR,'batch_launcher.py'])
-scriptingLanguages=['perl','python','ruby','sh']
+scriptingLanguages=['perl','python','ruby','sh', 'bash']
 # task types
 BLAST='blast'
 DCMB='dcmegablast'
@@ -2675,6 +2683,7 @@ GLIMMERMG='glimmermg'
 FRHIT='frhit'
 LAST='lastal'
 HMMER='hmmer'
+VIRSORTER='virsorter'
 programOptionMap={BLAST:{'in':'-i',
                          'out':['-o'],
                          'rel':['-d'],
@@ -2689,6 +2698,20 @@ programOptionMap={BLAST:{'in':'-i',
                              'rel':['-db'],
                          'threads':'-num_threads'
                         },
+                  VIRSORTER:{'in': '-f',
+                             'prefix': '--wdir',
+                             'out': ['%p/VIRSorter_global-phage-signal.csv',
+                                     '%p/Predicted_viral_sequences/VIRSorter_cat-1.fasta',
+                                     '%p/Predicted_viral_sequences/VIRSorter_cat-2.fasta',
+                                     '%p/Predicted_viral_sequences/VIRSorter_cat-3.fasta',
+                                     '%p/Predicted_viral_sequences/VIRSorter_prophages_cat-4.fasta',
+                                     '%p/Predicted_viral_sequences/VIRSorter_prophages_cat-5.fasta',
+                                     '%p/Predicted_viral_sequences/VIRSorter_prophages_cat-6.fasta',
+                                     '%p/Metric_files/VIRSorter_phage_signal.tab',
+                                     '%p/logs/err',
+                                     '%p/logs/log',],
+                             'threads': '--ncpu',
+                            },
                   METARNA:{'in':'-i',
                            'out':['%p.coord','%p.mask','%p.seq','%e.coord','%e.mask','%e.seq'],
                            'prefix':'-o',
@@ -2722,8 +2745,11 @@ glimmermgRE=re.compile(r'(glimmer-mg\.py)$')
 frHitRE=re.compile(r'(fr-hit)$')
 lastRE=re.compile(r'(lastal)$')
 hmmerRE=re.compile(r'(hmmsearch|hmmscan)$')
+virsorterProgRE = \
+    re.compile(r'^(wrapper_phage_contigs_sorter_iPlant.pl|virsorter)$')
 taskTypePatterns={BLAST:blastProgRE,
                   BLASTPLUS:blastPlusProgRE,
+                  VIRSORTER:virsorterProgRE,
                   DCMB:dcmbProgRE,
                   METARNA:mrnaProgRE,
                   FGENESB:fgbProgRE,
@@ -2759,6 +2785,8 @@ flagsWithArguments={GLIMMERMG:['--iter','-p','-t','-i','-q','-r','-s','-u','--fu
                            "--domT", "--incE", "--incT", "--incdomE",
                            "--incdomT", "--F1", "--F2", "--F3", "-Z", "--domZ",
                            "--seed", "--tformat", "--cpu"],
+                    VIRSORTER:["-d", "--cp", "--db", "--ncpu", "--data_dir",
+                               "-f"],
                    }
 
 taskSpecificCopy={}
