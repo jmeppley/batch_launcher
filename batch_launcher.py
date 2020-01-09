@@ -107,6 +107,11 @@ def checkTmpDir(tmpDir,jobName):
     logging.debug("Created temporary directory: %s" % tmpDir)
     return tmpDir
 
+def create_parent_dir(path):
+    """ create the parent dir for path if it doesn't already exist """
+    if not os.path.exists(os.path.dirname(path)):
+        os.makedirs(os.path.dirname(path))
+
 def getFileType(options, infile):
     """
     figure out how to split up the input file and return a FileType object with the necessary info.
@@ -172,7 +177,7 @@ def getTypeFromFileName(filename):
     if fileType is not None:
         return fileType
     else:
-        logging.warn("""Cannot guess type of %s!
+        logging.warning("""Cannot guess type of %s!
 
 The input file does not have a recognized extension:
 %s
@@ -248,7 +253,7 @@ def fastqRecordSizer(recordLines):
             return size
         size+=len(line.strip())
 
-    logging.warn("Did not find quality line in record: %s" % recordLines)
+    logging.warning("Did not find quality line in record: %s" % recordLines)
     return size
 
 def gbRecordSizer(recordLines):
@@ -574,7 +579,7 @@ Given an input file with multiple records, an output file, and a command: proces
     # options for processing command
     option_group = parser.add_argument_group('Command Parsing Options')
     option_group.add_argument("-G", "--ignore", default=False, action='store_true',
-    help="Do not perform checks based on the program name (in the command). Batch_launcher will skip need you to indicate input/output/threads with -i,-o, and -t, and it will skip any program specific processing (e.g. db checks for blast)")
+    help="Do not perform checks based on the program name (in the command). Batch_launcher will need you to indicate input/output/threads with -i,-o, and -t, and it will skip any program specific processing (e.g. db checks for blast)")
     option_group.add_argument("-i", "--inputFlag", metavar="FLAG",
                       help="Indicate where in command to find the input file to fragment. The value can be an option flag (eg '-i' or '-fasta') or a number indicating a positional argument. Only needed if program in command is not recognized.")
     option_group.add_argument("-o", "--outputFlags", action='append',metavar='FLAG',
@@ -690,7 +695,7 @@ Given an input file with multiple records, an output file, and a command: proces
 
     # cleanup only?
     if options.mode=='cleanup':
-        logging.warn("Starting cleanup at: %s" % (datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")))
+        logging.warning("Starting cleanup at: %s" % (datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")))
         exitcode=cleanup(options, cmdargs)
         sys.exit(exitcode)
 
@@ -712,7 +717,7 @@ Given an input file with multiple records, an output file, and a command: proces
         #        parser.error("I'm sorry the command is not recognized. Please use the -i and -o options to specify the input and output flags in your command.")
 
     else:
-        logging.warn('User chose to run command without modification')
+        logging.warning('User chose to run command without modification')
 
     # cerate job name if not supplied by user
     if options.jobName is None:
@@ -772,7 +777,7 @@ Given an input file with multiple records, an output file, and a command: proces
         if options.verbose<=3:
             exitcode=cleanup(options, cmdargs)
         else:
-            logging.warn("Debugging level is high, so skipping cleanup and leaving temporary files in place")
+            logging.warning("Debugging level is high, so skipping cleanup and leaving temporary files in place")
             sys.exit(0)
         logging.debug("Done!")
         sys.exit(exitcode)
@@ -1068,7 +1073,7 @@ def launchLocalJobs(options, cmdargs, errStream):
     # There was at least one error
     # add this one to the remaining to get count
     errorCount = errorQueue.qsize()+1
-    logging.warn("%d of %d tasks reported non zero exit codes!" % (errorCount, numTasks))
+    logging.warning("%d of %d tasks reported non zero exit codes!" % (errorCount, numTasks))
     sys.exit(exitcode)
 
 def launchJobs(options, cmdargs, errStream=sys.stdin):
@@ -1126,7 +1131,7 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
         if options.wait and options.queue != SLURM:
             # when using -sync y, the exit code may come from a task
             #  (which cleanup will handle)
-            logging.warn("qsub returned an error code of: %d" 
+            logging.warning("qsub returned an error code of: %d" 
                     % error.returncode)
         else:
             raise error
@@ -1411,6 +1416,7 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
                         anyFile=True
                         if options.verbose>=2:
                             if errStream is None:
+                                create_parent_dir(errStreamFile)
                                 errStream = open(errStreamFile, 'w')
                             addFileToStream(logfrag,errStream,header="## LOGGING from fragment %d:" % (i))
                             if outfrag not in outfragmap:
@@ -1837,6 +1843,7 @@ def getStream(outstream):
         # return second element (should be an open handle)
         if outstream[1] is None:
             # open handle if needed
+            create_parent_dir(outstream[0])
             outstream[1]=open(outstream[0],'a')
         return outstream[1]
     else:
@@ -1989,7 +1996,9 @@ def runFragment(options, cmdargs, taskNum=None):
             logging.debug("Command:\n%s\nwd=%s\npath=%s" % (formatCommand(cmdargs),subprocwd,path))
             t1=time.time()
             # Run the command
-            exitcode=subprocess.call(cmdargs, stdin=spin, stdout=spout, stderr=sperr, cwd=subprocwd, env={"PATH":path})
+            exitcode=subprocess.call(cmdargs, stdin=spin, stdout=spout,
+                                     stderr=sperr, cwd=subprocwd)
+            #exitcode=subprocess.call(cmdargs, stdin=spin, stdout=spout, stderr=sperr, cwd=subprocwd, env={"PATH":path})
             t2=time.time()
             logging.info("Command took %.2f seconds" % (t2-t1))
         except:
@@ -2031,9 +2040,10 @@ def runFragment(options, cmdargs, taskNum=None):
                 tmpOutput = "%s%s%s" % (options.tmpDir, os.sep, output)
                 if os.path.exists(localOutput):
                     logging.info("Copying %s to %s" % (localOutput, tmpOutput))
+                    create_parent_dir(tmpOutput)
                     shutil.move(localOutput,tmpOutput)
                 else:
-                    logging.warn("Could not find output: %s" % output)
+                    logging.warning("Could not find output: %s" % output)
                     logging.debug("Flag: %s" % (flag))
 
     except:
@@ -2053,6 +2063,7 @@ def runFragment(options, cmdargs, taskNum=None):
 
     t2=time.time()
     logging.info("Fragment took %.2f seconds" % (t2-t0))
+
     # copy err to shared dir
     if options.queue != LOCAL:
         logging.shutdown()
@@ -2064,10 +2075,12 @@ def runFragment(options, cmdargs, taskNum=None):
         shutil.copy(logFile, os.path.join(options.tmpDir,
                                           "%s.log" % (infragmentName)))
 
-    # remove local temorary dir
-    for f in os.listdir(localDir):
-        logging.debug("File: "+f)
-    shutil.rmtree(localDir)
+    # remove local temorary dir (if not debugging)
+    if logging.getLogger().level > logging.DEBUG:
+        logging.debug("I AM removing %s", localDir)
+        shutil.rmtree(localDir)
+    else:
+        logging.debug("NOT removing %s", localDir)
 
     return exitcode
 
@@ -2318,7 +2331,7 @@ def prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs, ho
                 cmdargs[i]=str(threads)
         else:
             # something went wrong
-            logging.warn("Unrecognized nextArgument: %s" % (nextArgument))
+            logging.warning("Unrecognized nextArgument: %s" % (nextArgument))
             raise Exception("Unrecognized nextArgument: %s" % (nextArgument))
 
         # reset
@@ -2390,7 +2403,7 @@ def getThreadCountForNode(hostname,errStream,queue=SGE):
     elif queue==SLURM:
         return getThreadsCountForSLURMNode(hostname, errStream)
     else:
-        logging.warn("Unrecognized queue (%s), using 8 cores" % (queue))
+        logging.warning("Unrecognized queue (%s), using 8 cores" % (queue))
         return 8
 
 def getThreadCountForSLRUMNode(hostname, errStream):
@@ -2410,7 +2423,7 @@ def getThreadCountForSLRUMNode(hostname, errStream):
             break
     else:
         slots=8
-        logging.warn("Could not parse sinfo output:\n%s" % (qhout))
+        logging.warning("Could not parse sinfo output:\n%s" % (qhout))
     return slots
 
 def getThreadCountForSGENode(hostname, errStream):
@@ -2430,7 +2443,7 @@ def getThreadCountForSGENode(hostname, errStream):
             break
     else:
         slots=8
-        logging.warn("Could not parse qhost output:\n%s" % (qhout))
+        logging.warning("Could not parse qhost output:\n%s" % (qhout))
     return slots
 
 def getTaskId(options):
@@ -2457,7 +2470,7 @@ def getHostName():
         try:
             return os.uname()[1]
         except:
-            logging.warn("Could not parse hostname from %s" % (str(os.uname())))
+            logging.warning("Could not parse hostname from %s" % (str(os.uname())))
             return 'NODE'
 
 ##################
@@ -2501,7 +2514,7 @@ def inspectFrHitCommand(command,taskType,sgeOptions,commandBin,batchOptions):
         raise Exception("You must supply a database to run fr-hit")
 
     if refDBSize is not None:
-        logging.warn("You supplied ref DB size of %s. If you omit the -R option batch_launcher will calculate the db size for you." % (refDBSize))
+        logging.warning("You supplied ref DB size of %s. If you omit the -R option batch_launcher will calculate the db size for you." % (refDBSize))
     else:
         dbInfo = countBasesInFasta(refDB)
         logging.info("Reference db (%s) has %s bases in %s records" % (refDB,dbInfo['bases'],dbInfo['records']))
@@ -2519,7 +2532,7 @@ def inspectFrHitCommand(command,taskType,sgeOptions,commandBin,batchOptions):
             batchOptions.chunk = calculateChunkSize(dbInfo['bases'],batchOptions.splits)
         else:
             if not batchOptions.splitOnSize:
-                logging.warn("Are you sure you want to split on number of records? It usually is a good idea to split on number of bases (-s)")
+                logging.warning("Are you sure you want to split on number of records? It usually is a good idea to split on number of bases (-s)")
 
 def inspectLastCommand(command,taskType,sgeOptions,commandBin,batchOptions):
     # apply the defaults
@@ -2712,7 +2725,7 @@ programOptionMap={BLAST:{'in':'-i',
                                      '%p/Predicted_viral_sequences/VIRSorter_prophages_cat-6.fasta',
                                      '%p/Metric_files/VIRSorter_phage_signal.tab',
                                      '%p/logs/err',
-                                     '%p/logs/log',],
+                                     '%p/logs/out',],
                              'threads': '--ncpu',
                             },
                   METARNA:{'in':'-i',
@@ -2851,7 +2864,7 @@ class FragmentTask():
         logging.debug("Launching job: %s" % (self.cmd))
         exitcode=runFragment(self.options,self.cmd,taskNum=self.taskNum)
         if exitcode!=0:
-            logging.warn("Task %d exited with %d" % (self.taskNum,
+            logging.warning("Task %d exited with %d" % (self.taskNum,
                 exitcode))
             self.errorQueue.put(exitcode)
 
