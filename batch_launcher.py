@@ -1583,9 +1583,12 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
         errStream.close()
     if failureStream is not None:
         failureStream.close()
+
     # delete directory
-    logging.debug("removing tmp folder %s", options.tmpDir)
-    os.rmdir(options.tmpDir)
+    if logging.getLogger().level > logging.DEBUG:
+        shutil.rmtree(options.tmpDir)
+    else:
+        logging.debug("NOT removing tmp dir: %s", options.tmpDir)
     logging.debug("cleanup is complete")
     return exitcode
 
