@@ -1290,7 +1290,9 @@ def launchCleanup(options, cmdargs, errStream=sys.stderr):
     # name outputfiles
     outFileByFlag = getOutputFiles(options, cmdargs)
     logging.debug("Outfiles: %s" % (outFileByFlag))
-    fileNameBase = getFileNameBase(options.outputFlags,outFileByFlag,options.jobName)
+    fileNameBase = getFileNameBase(options.outputFlags, 
+                                   outFileByFlag,
+                                   options.jobName)
     logging.debug("File Name Base: %s" % (fileNameBase))
 
     # build command
@@ -1655,12 +1657,14 @@ def moveNewFragmentsToTmpDir(options,nextTaskNum):
         os.rename(newfrag,frag)
     os.rmdir("%s%stmp" % (options.tmpDir, os.sep))
 
-def getFileNameBase(outFlags,outFileByFlag,default):
+def getFileNameBase(outFlags, outFileByFlag, default):
     " what do we name all the log files? "
     if outFlags:
         logging.debug("Output Flags: \n%r", outFlags)
         logging.debug("Output Files \n%r", outFileByFlag)
-        # base output file on first output file selected that looks good
+        logging.debug("Default \n%r", default)
+
+        # base output file name on first output file selected that looks good
         # This is a hack to fix fallout from the secondary file code
         best_file = None
         for flag in outFlags:
@@ -1680,8 +1684,18 @@ def getFileNameBase(outFlags,outFileByFlag,default):
         if best_file is not None:
             return best_file
         else:
-            # has been translated to integer, take #1 (first in command, not in flags)
-            return outFileByFlag[1]
+            if 1 in outFileByFlag:
+                # has been translated to integer, take #1 (first in command, not in flags)
+                return outFileByFlag[1]
+
+        pid = os.getpid()
+        name_root = "%s.%s" % (default, pid)
+        # hopefully we only get here if all the outputs are STDOUT
+        if any(f != "%stdout" for f in outFlags):
+            # if not, print a warning
+            logging.warn("Cannot find a name for output files, using default: %s",
+                         name_root)
+        return name_root
 
     return default
 
@@ -2198,11 +2212,13 @@ def getOutputFiles(options, cmdargs):
     """
     outFileByFlag={}
 
-    logging.debug("Command:\n%s\ninfile: %s\noutfile: %s" % (cmdargs, options.inputFlag, options.outputFlags))
+    logging.debug("Command:\n%s\ninfile: %s\noutfile: %s" % (cmdargs,
+                                                             options.inputFlag,
+                                                             options.outputFlags))
 
     # setup hashes to look for options
     # returns hash mapping position or flag to 'in' or 'out'
-    (positionalArgs,flaggedArgs)=getOptionHashes(options)
+    (positionalArgs, flaggedArgs) = getOptionHashes(options)
     logging.debug("positionalArgs: %s\nflaggedArgs: %s" % (positionalArgs,flaggedArgs))
 
     # scan command
