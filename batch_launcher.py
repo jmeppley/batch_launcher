@@ -36,7 +36,7 @@ queueBinaryMap={SGE:'qsub',
 
 import argparse
 import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, queue
-from math import ceil
+from math import floor, ceil
 
 ###########
 # edl.util (selected functions)
@@ -109,8 +109,11 @@ def checkTmpDir(tmpDir,jobName):
 
 def create_parent_dir(path):
     """ create the parent dir for path if it doesn't already exist """
-    if not os.path.exists(os.path.dirname(path)):
-        os.makedirs(os.path.dirname(path))
+    parent_dir = os.path.dirname(path)
+    if parent_dir == '':
+        return
+    if not os.path.exists(parent_dir):
+        os.makedirs(parent_dir)
 
 def getFileType(options, infile):
     """
@@ -204,20 +207,36 @@ def getSizePerChunk(infile, splits, fileType, splitOnSize=False):
 
     # loop through records
     inhandle = openInputFile(infile)
+    record_count = 0
     totalSize = 0
     for record in fileType.recordStreamer(inhandle):
+        record_count += 1
         totalSize+=recordSizer(record)
     inhandle.close()
 
-    return calculateChunkSize(totalSize,splits)
+    return calculateChunkSize(totalSize, record_count, splits)
 
-def calculateChunkSize(size,splits):
+def calculateChunkSize(size, record_count, splits):
     """
     how big should the fragments be?
     """
+    avg_record_size = size / record_count
+    logging.info(
+        "Avg record size: %0.02f=%d/%d" %
+        (avg_record_size, size, record_count))
+    chunk = floor(ceil(size / (splits * avg_record_size)) * avg_record_size)
+
+    logging.info(
+        "Setting chunk to: %d=floor(ceil(%d/(%d*%0.02f))*%0.02d)" %
+        (chunk, size, splits, avg_record_size, avg_record_size))
+    return chunk
+
+"""  old version:
+def calculateChunkSize(size,splits):
     chunk = int(ceil(size/float(splits)))
     logging.info("Setting chunk to: %d=ceil(%d/%d)" % (chunk,size,splits))
     return chunk
+"""
 
 # Simply count records
 recordCounter=lambda x: 1
@@ -1100,14 +1119,14 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
     command+=["--mode","run","--tmp_dir",options.tmpDir,"--frag_base",
               options.fragBase, "--frag_dir", options.frag_dir, "--frag_suffix", options.fragSuff, "--loglevel", str(options.verbose), "--queue", options.queue]
     if options.inputFlag is not None:
-        command+=['-i',str(options.inputFlag)]
+        command.append('-i=%s' % (options.inputFlag))
     if options.prefixFlag is not None:
-        command+=['-p',str(options.prefixFlag)]
+        command.append('-p=%s' % (options.prefixFlag))
     if options.threadsFlag is not None:
         command+=['-t',str(options.threadsFlag)]
     if options.outputFlags is not None:
         for flag in options.outputFlags:
-            command+=['-o',str(flag)]
+            command.append('-o=%s' % (flag))
     if options.taskType is not None:
         command+=['--taskType',options.taskType]
     if options.cwd:
@@ -1124,9 +1143,13 @@ def launchJobs(options, cmdargs, errStream=sys.stdin):
     # run command
     logging.debug('Launching task array: %s' % (formatCommand(command)))
     try:
-        submissionOutput=subprocess.check_output(command)
+        submissionOutput = subprocess.check_output(command)
+        try:
+            submissionOutput = submissionOutput.decode()
+        except:
+            pass
         if options.verbose>0:
-            errStream.write("Submission Output: " + submissionOutput.decode())
+            errStream.write("Submission Output: " + submissionOutput)
     except subprocess.CalledProcessError as error:
         if options.wait and options.queue != SLURM:
             # when using -sync y, the exit code may come from a task
@@ -1267,7 +1290,9 @@ def launchCleanup(options, cmdargs, errStream=sys.stderr):
     # name outputfiles
     outFileByFlag = getOutputFiles(options, cmdargs)
     logging.debug("Outfiles: %s" % (outFileByFlag))
-    fileNameBase = getFileNameBase(options.outputFlags,outFileByFlag,options.jobName)
+    fileNameBase = getFileNameBase(options.outputFlags, 
+                                   outFileByFlag,
+                                   options.jobName)
     logging.debug("File Name Base: %s" % (fileNameBase))
 
     # build command
@@ -1290,14 +1315,14 @@ def launchCleanup(options, cmdargs, errStream=sys.stderr):
     if options.splitOnSize:
         command.append('--splitOnSize')
     if options.inputFlag is not None:
-        command+=['-i',str(options.inputFlag)]
+        command.append('-i=%s' % str(options.inputFlag))
     if options.prefixFlag is not None:
-        command+=['-p',str(options.prefixFlag)]
+        command.append('-p=%s' % str(options.prefixFlag))
     if options.threadsFlag is not None:
         command+=['-t',str(options.threadsFlag)]
     if options.outputFlags is not None:
         for flag in options.outputFlags:
-            command+=['-o',str(flag)]
+            command.append('-o=%s' % str(flag))
     if options.taskType is not None:
         command+=['--taskType',options.taskType]
     if options.pattern is not None:
@@ -1309,7 +1334,7 @@ def launchCleanup(options, cmdargs, errStream=sys.stderr):
     if options.cwd:
         command.append('--cwd')
     if options.sgeOptions:
-        command.extend(['--submitOptions'," ".join(options.sgeOptions)])
+        command.append('-S="%s"' % " ".join(options.sgeOptions))
     command.append('--')
     command+=cmdargs
 
@@ -1632,12 +1657,14 @@ def moveNewFragmentsToTmpDir(options,nextTaskNum):
         os.rename(newfrag,frag)
     os.rmdir("%s%stmp" % (options.tmpDir, os.sep))
 
-def getFileNameBase(outFlags,outFileByFlag,default):
+def getFileNameBase(outFlags, outFileByFlag, default):
     " what do we name all the log files? "
     if outFlags:
         logging.debug("Output Flags: \n%r", outFlags)
         logging.debug("Output Files \n%r", outFileByFlag)
-        # base output file on first output file selected that looks good
+        logging.debug("Default \n%r", default)
+
+        # base output file name on first output file selected that looks good
         # This is a hack to fix fallout from the secondary file code
         best_file = None
         for flag in outFlags:
@@ -1657,8 +1684,18 @@ def getFileNameBase(outFlags,outFileByFlag,default):
         if best_file is not None:
             return best_file
         else:
-            # has been translated to integer, take #1 (first in command, not in flags)
-            return outFileByFlag[1]
+            if 1 in outFileByFlag:
+                # has been translated to integer, take #1 (first in command, not in flags)
+                return outFileByFlag[1]
+
+        pid = os.getpid()
+        name_root = "%s.%s" % (default, pid)
+        # hopefully we only get here if all the outputs are STDOUT
+        if any(f != "%stdout" for f in outFlags):
+            # if not, print a warning
+            logging.warn("Cannot find a name for output files, using default: %s",
+                         name_root)
+        return name_root
 
     return default
 
@@ -2175,11 +2212,13 @@ def getOutputFiles(options, cmdargs):
     """
     outFileByFlag={}
 
-    logging.debug("Command:\n%s\ninfile: %s\noutfile: %s" % (cmdargs, options.inputFlag, options.outputFlags))
+    logging.debug("Command:\n%s\ninfile: %s\noutfile: %s" % (cmdargs,
+                                                             options.inputFlag,
+                                                             options.outputFlags))
 
     # setup hashes to look for options
     # returns hash mapping position or flag to 'in' or 'out'
-    (positionalArgs,flaggedArgs)=getOptionHashes(options)
+    (positionalArgs, flaggedArgs) = getOptionHashes(options)
     logging.debug("positionalArgs: %s\nflaggedArgs: %s" % (positionalArgs,flaggedArgs))
 
     # scan command
@@ -2527,12 +2566,14 @@ def inspectFrHitCommand(command,taskType,sgeOptions,commandBin,batchOptions):
         if batchOptions.chunk is None:
             # if the user hasn't set the chunk size, always size chunks by bases
             batchOptions.splitOnSize=True
-            dbsize=dbInfo['bases']
+            dbsize = dbInfo['bases']
             if batchOptions.splits is None:
                 # set chunk to max for node RAM (and calculate splits)
                 batchOptions.splits = ceil(float(dbsize)/DEFAULT_FRHIT_CHUNK)
                 # next, re-adjust chunk so that fragments are similar sizes
-            batchOptions.chunk = calculateChunkSize(dbInfo['bases'],batchOptions.splits)
+            batchOptions.chunk = calculateChunkSize(dbsize,
+                                                    dbInfo['records'],
+                                                    batchOptions.splits)
         else:
             if not batchOptions.splitOnSize:
                 logging.warning("Are you sure you want to split on number of records? It usually is a good idea to split on number of bases (-s)")
