@@ -13,7 +13,7 @@ MAINTAINER_EMAIL = "jmeppley@gmail.com"
 URL = 'http://github.com/jmeppley/batch_launcher'
 DOWNLOAD_URL = 'http://github.com/jmeppley/batch_launcher'
 LICENSE = 'Apache'
-VERSION = '2.0'
+VERSION = '1.0.1'
 
 setup(name=NAME,
       version=VERSION,
