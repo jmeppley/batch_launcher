@@ -7,7 +7,7 @@ If the command to run is one of the currently recognized commands: (blastall, rp
     batch_launcher.py -- blastall -i some_file.fasta -d some_db -p blastx -o some_file.vs.db.blastx
 
 If the script does not recognize your command, you can tell it where to find the input and output files by indicating with the -i and -o flags, where in your command these files are named:
-    batch_launcher.py -i -i -o -o -- blastall -i some_file.fasta -d some_db -p blastx -o some_file.vs.db.blastx
+    batch_launcher.py -i=-i -o=-o -- blastall -i some_file.fasta -d some_db -p blastx -o some_file.vs.db.blastx
 
 The -i and -o flags (in addition to accepting flags) will also take a number indicating which element of the command has the file name. The executable or script is element number 0 of the command. ("-i 2 -o 8" would have worked in the above example)
 
@@ -570,7 +570,7 @@ fileExtensionMap={'.fa':FASTA,
                   '.hmm':HMM,
                  }
 
-def main():
+def set_up_cmd_parser():
     ## set up CLI
     usage = "usage: %prog [options] -- [command to run on cluster]"
     description = """
@@ -679,6 +679,12 @@ Given an input file with multiple records, an output file, and a command: proces
                       help="only for task running: what type of task is this? Will be ignored in inital call")
 
     parser.add_argument("command", nargs="*")
+    
+    return parser
+
+def main():
+def 
+    parser = set_up_cmd_parser()
 
     options = parser.parse_args()
     cmdargs = options.command
