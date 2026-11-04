@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batch_launcher"
-version = "1.0.1"
+version = "1.1.0"
 description = "Python script to fragment tasks for parallel execution"
 readme = "README.md"
-requires-python = "<3.11"
+requires-python = ">=3.7"
 license = { text = "Apache" }
 authors = [
   { name = "John Eppley", email = "jmeppley@gmail.com" },
@@ -21,7 +21,11 @@ classifiers = [
   "Intended Audience :: Science/Research",
   "License :: OSI Approved :: GPL License",
   "Natural Language :: English",
-  "Programming Language :: Python :: 2.7",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
 ]
 
 [project.urls]

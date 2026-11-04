@@ -70,8 +70,8 @@ def openInputFile(infile, *args):
 
     if isinstance(infile, str):
         if urlRE.match(infile):
-            import urllib2
-            return urllib2.urlopen(infile)
+            from urllib.request import urlopen
+            return urlopen(infile)
         if len(infile)>3 and infile[-3:]=='.gz':
             import gzip
             return gzip.GzipFile(infile,'rb')
@@ -719,7 +719,7 @@ def main():
 
     # cleanup only?
     if options.mode=='cleanup':
-        logging.warning("Starting cleanup at: %s" % (datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y")))
+        logging.warning("Starting cleanup at: %s" % (datetime.datetime.now(datetime.timezone.utc).strftime("%a %b %d %H:%M:%S UTC %Y")))
         exitcode=cleanup(options, cmdargs)
         sys.exit(exitcode)
 
@@ -1804,7 +1804,7 @@ def addBlastFilesToStream(fileMap,fragIndex,inputFragment):
     currentRecordOutput=[]
     state=START
     with open(outFragment,'rt') as f:
-        line=f.next()
+        line=next(f)
         if blastHeaderRE.match(line):
             state=HEADER
             currentRecordOutput.append(line)
@@ -2699,7 +2699,7 @@ def mergeDBs(cmdargs, localDir):
 TITLE TemporaryBlastAlias
 #
 DBLIST %s
-""" % (datetime.datetime.utcnow().strftime("%a %b %d %H:%M:%S UTC %Y"),' '.join(dbs)))
+""" % (datetime.datetime.now(datetime.timezone.utc).strftime("%a %b %d %H:%M:%S UTC %Y"),' '.join(dbs)))
 
         tmpHandle.close()
         dbs=[tmpAlias,]
@@ -2924,4 +2924,3 @@ relativePathRE=re.compile(r'^\.\.?\/')
 
 if __name__ == '__main__':
     main()
-
