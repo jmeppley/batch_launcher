@@ -18,7 +18,7 @@
 @test "Testing wrong input designation" {
     run ./batch_launcher.py -C 10 -X local -i 30 -- grep "^>" test_data/HOT_100_reads.fasta
     [ "$status" = 1 ]
-    [ "${lines[7]}" = "Exception: Unable to find the following arguments in the command: 'pos 30'" ]
+    [[ "$output" == *"Exception: Unable to find the following arguments in the command: 'pos 30'"* ]]
 }
 
 @test "Testing good command" {
@@ -32,4 +32,3 @@
     [ "$status" = 0 ]
     [ "${#lines[@]}" = 100 ]
 }
-

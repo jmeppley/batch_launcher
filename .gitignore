@@ -66,4 +66,7 @@ target/
 *.slurm
 .tst.*
 .batch_launcher
-tmp*/
+tmp*Bat_*/
+test.*.yaml
+test.*.env/
+test.*.env.log

@@ -7,7 +7,7 @@ name = "batch_launcher"
 version = "1.1.0"
 description = "Python script to fragment tasks for parallel execution"
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 license = { text = "Apache" }
 authors = [
   { name = "John Eppley", email = "jmeppley@gmail.com" },
