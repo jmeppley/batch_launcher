@@ -683,7 +683,6 @@ Given an input file with multiple records, an output file, and a command: proces
     return parser
 
 def main():
-def 
     parser = set_up_cmd_parser()
 
     options = parser.parse_args()

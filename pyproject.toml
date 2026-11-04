@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "batch_launcher"
+version = "1.0.1"
+description = "Python script to fragment tasks for parallel execution"
+readme = "README.md"
+requires-python = "<3.11"
+license = { text = "Apache" }
+authors = [
+  { name = "John Eppley", email = "jmeppley@gmail.com" },
+]
+maintainers = [
+  { name = "John Eppley", email = "jmeppley@gmail.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: GPL License",
+  "Natural Language :: English",
+  "Programming Language :: Python :: 2.7",
+]
+
+[project.urls]
+Homepage = "http://github.com/jmeppley/batch_launcher"
+Download = "http://github.com/jmeppley/batch_launcher"
+
+[project.scripts]
+batch_launcher = "batch_launcher:main"
+
+[tool.setuptools]
+py-modules = ["batch_launcher"]
