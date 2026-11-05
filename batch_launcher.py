@@ -749,13 +749,13 @@ def main():
     options.splits=fragmentInput(infile, options, options.fragBase)
 
     # launch task array
-    launchLocalJobs(options, cmdargs)
+    launchExitCode = launchLocalJobs(options, cmdargs)
 
     if options.verbose<=3:
         exitcode=cleanup(options, cmdargs)
     else:
         logging.warning("Debugging level is high, so skipping cleanup and leaving temporary files in place")
-        sys.exit(0)
+        sys.exit(launchExitCode)
     logging.debug("Done!")
     sys.exit(exitcode)
 
@@ -1022,13 +1022,13 @@ def launchLocalJobs(options, cmdargs):
         exitcode=errorQueue.get(False)
     except queue.Empty:
         # no errors
-        return
+        return 0
 
     # There was at least one error
     # add this one to the remaining to get count
     errorCount = errorQueue.qsize()+1
     logging.warning("%d of %d tasks reported non zero exit codes!" % (errorCount, numTasks))
-    sys.exit(exitcode)
+    return exitcode
 
 def cleanup(options, cmdargs, errStream=sys.stdin):
     """
