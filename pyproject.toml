@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "batch_launcher"
-version = "1.1.0"
+dynamic = ["version"]
 description = "Python script to fragment tasks for parallel execution"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -37,3 +37,6 @@ batch_launcher = "batch_launcher:main"
 
 [tool.setuptools]
 py-modules = ["batch_launcher"]
+
+[tool.setuptools.dynamic]
+version = { attr = "batch_launcher.__version__" }
