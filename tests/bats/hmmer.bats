@@ -13,4 +13,3 @@
     run diff <(grep -v "^#" test_data/.tst.genes.v.pfam.tbl) <(grep -v "^#" test_data/genes.v.pfam.tbl)
     [ "$status" = 0 ]
 }
-

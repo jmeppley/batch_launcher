@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 #$ -S /usr/bin/python
 """
-Run (almost) any command in parallel across a cluster (using SGE or SLURM) or on a single server. The only requirement is that the input file can be broken into pieces (using regex or line counts). Many bioinformatics file types (fasta, fastq, gbk) are implicitly understood. The resulting output fragments will simply be concatenated.
+Run (almost) any command in parallel on a single server. The only requirement is that the input file can be broken into pieces (using regex or line counts). Many bioinformatics file types (fasta, fastq, gbk) are implicitly understood. The resulting output fragments will simply be concatenated.
 
 If the command to run is one of the currently recognized commands: (blastall, rpsblast, softbery, meta_rna) you can simply give the command as you would run it locally. EG:
     batch_launcher.py -- blastall -i some_file.fasta -d some_db -p blastx -o some_file.vs.db.blastx
@@ -13,8 +13,8 @@ The -i and -o flags (in addition to accepting flags) will also take a number ind
 
 The -i flag can be omitted or set to '%stdin' to read from standard input. (You must supply the input type and the chunk size!)
 
-The -o flag can be ommitted to print to stdout (if --wait is used) or set to one of the following:
-    %stdout (must use --wait)
+The -o flag can be omitted to print to stdout after local tasks finish, or set to one of the following:
+    %stdout
     %e.xxx (replace the extension of the input file with '.xxx')
     %a.xxx (add '.xxx' to the input file name)
     %E.xxx and %A.xxx (same as above, but strip path from inputfile, and write in ./)
@@ -27,12 +27,7 @@ Additionally, if any output file is a directory, the final output will be a dire
 The script will try to recognize the record type of the input file based on its extension. If it can't you will have to either supply a regex pattern to split the file on (-p "^>" for fasta, -p "^LOCUS" for gbk, etc) or manually set the file type (eg: -T fasta).
 """
 version="batch_launcher 1.0.1"
-SGE='sge'
-SLURM='slurm'
 LOCAL='local'
-AUTO='auto'
-queueBinaryMap={SGE:'qsub',
-                SLURM:'sbatch'}
 
 import argparse
 import sys, re, logging, os, tempfile, subprocess, shutil, traceback, datetime, shlex, time, fileinput, io, threading, queue
@@ -640,13 +635,11 @@ Given an input file with multiple records, an output file, and a command: proces
     # way to customize execution
     option_group = parser.add_argument_group('Fragment Execution Options')
 
-    option_group.add_argument("-X", "--queue", default=AUTO, 
-                      choices=[SGE,SLURM,LOCAL,AUTO],
-                      help="What type of scheduler to use: 'sge', 'slurm', or 'local' (just use threads and command-line). By default, it will check for the qsub (from sge)  and sbatch (from slurm) binaries in the PATH and go with the first one found.")
+    option_group.add_argument("-X", "--queue", default=LOCAL,
+                      choices=[LOCAL, "sge", "slurm", "auto"],
+                      help="Execution mode. Use 'local'; SGE and SLURM are no longer supported.")
     option_group.add_argument("-R", "--throttle", default=0, type=int,
-            help="Limit number of simultaneously executing fragemnts to given number. Default: 0 => unlimited")
-    option_group.add_argument("-w", "--wait", default=False, action='store_true',
-                      help="Wait for jobs to finish before exiting script (only when using SGE)")
+            help="Limit the number of simultaneously executing local tasks. Default: 0 (unlimited)")
     option_group.add_argument("-c","--cwd",dest='cwd',
                       default=False,action='store_true',
                       help='Run fragment in current directory, otherwise it will be executed in the tmp location (as configured in Python, usu a local disk like /tmp) of the node (which is good for programs like softnerry that create lots of temporary files)')
@@ -655,14 +648,9 @@ Given an input file with multiple records, an output file, and a command: proces
 
     option_group = parser.add_argument_group('Advanced Fragment Execution Options')
     option_group.add_argument("-j", "--jobName", metavar="STRING",
-                      help="String for naming queued tasks")
+                      help="String for naming tasks and their output files")
     option_group.add_argument("-d", "--tmp_dir", dest='tmpDir',
                       help="Temporary directory for files")
-    option_group.add_argument("-S", "--submitOptions", default=None, dest='sgeOptions',
-                      help="Option string to add to SGE or SLURM command")
-    option_group.add_argument("-n", "--priority", default=0, type=int,
-                      help="Adjust priority of sub-tasks, only applies to SGE")
-
     # primarily used when calling self
     option_group = parser.add_argument_group('Internal Use Only')
     option_group.add_argument("-f", "--frag_base", dest="fragBase", default=None,
@@ -672,12 +660,6 @@ Given an input file with multiple records, an output file, and a command: proces
                      help=("folder with input fragments"))
     option_group.add_argument("--frag_suffix", dest="fragSuff", default=None,
                      help=("naming suffix for input file fragments"))
-    option_group.add_argument("-m", "--mode", default='launch', metavar='MODE',
-                      choices=['launch','run','cleanup'],
-                      help="Only used internally to lauch tasks in SGE or SLURM")
-    option_group.add_argument("-Z","--taskType",default=None, choices=list(taskTypePatterns.keys()),
-                      help="only for task running: what type of task is this? Will be ignored in inital call")
-
     parser.add_argument("command", nargs="*")
     
     return parser
@@ -688,6 +670,10 @@ def main():
     options = parser.parse_args()
     cmdargs = options.command
 
+    if options.queue != LOCAL:
+        parser.error("The -X %s option is no longer supported; use -X local." %
+                     options.queue)
+
     if options.version:
         print (version)
         exit(0)
@@ -696,7 +682,7 @@ def main():
         print (description)
         exit(0)
 
-    # if running launcher or cleanup, standard logging
+    # Configure standard logging.
     if options.verbose==0:
         loglevel=logging.ERROR
     elif options.verbose==1:
@@ -706,32 +692,15 @@ def main():
     elif options.verbose>=3:
         loglevel=logging.DEBUG
 
-    if options.logToFile and options.mode != 'run':
+    if options.logToFile:
         logStream=io.StringIO()
     else:
         logStream=sys.stderr
     logging.basicConfig(stream=logStream, level=loglevel)
 
-    # If running a sub-job, do so now
-    if options.mode=='run':
-        exitcode=runFragment(options, cmdargs)
-        sys.exit(exitcode)
-
-    # cleanup only?
-    if options.mode=='cleanup':
-        logging.warning("Starting cleanup at: %s" % (datetime.datetime.now(datetime.timezone.utc).strftime("%a %b %d %H:%M:%S UTC %Y")))
-        exitcode=cleanup(options, cmdargs)
-        sys.exit(exitcode)
-
-    # get SGE options from user
-    sgeOptions=[]
-    if options.sgeOptions is not None:
-        sgeOptions.extend(shlex.split(options.sgeOptions))
-
     # figure out what the command is and apply some defaults
     if not options.ignore:
-        # Inspect command, get any special options for task runner and update sgeOptions
-        options.taskType = checkCommand(cmdargs,sgeOptions,options)
+        options.taskType = checkCommand(cmdargs, options)
         logging.debug('Task type is: %s' % (str(options.taskType)))
 
         # if any flag not supplied by user, check for defaults based on taskType
@@ -773,19 +742,6 @@ def main():
     if infile is None and options.chunk is None:
         parser.error("We can use STDIN only if a chunk size is given!")
 
-    if options.queue != LOCAL:
-        if options.queue == AUTO:
-            # auto-detect
-            options.queue = lookForQueueingCommands()
-
-        options.sgeOptions = sgeOptions
-        logging.debug("Adding the following submit options to task array command: '%s'" % sgeOptions)
-
-        # must use 'wait' to print to stdout
-        if not(options.outputFlags) or '%stdout' in options.outputFlags:
-            if not(options.wait):
-                parser.error("Piping output to stdout only works if we wait for the jobs to finish. Please use wait (-w) or fix your output flags (-o)")
-
     # get temporary dir
     options.tmpDir = checkTmpDir(options.tmpDir,options.jobName)
 
@@ -793,41 +749,15 @@ def main():
     options.splits=fragmentInput(infile, options, options.fragBase)
 
     # launch task array
-    launchJobs(options,cmdargs,errStream=logStream)
+    launchLocalJobs(options, cmdargs)
 
-    # launch cleanup
-    if options.wait or options.queue == LOCAL:
-        # if wait, then we already waited for jobs to finish, just run cleanup
-        if options.verbose<=3:
-            exitcode=cleanup(options, cmdargs)
-        else:
-            logging.warning("Debugging level is high, so skipping cleanup and leaving temporary files in place")
-            sys.exit(0)
-        logging.debug("Done!")
-        sys.exit(exitcode)
+    if options.verbose<=3:
+        exitcode=cleanup(options, cmdargs)
     else:
-        # otherwise, launch cleanup task to wait for processing to finish
-        launchCleanup(options, cmdargs, errStream=logStream)
-
-def lookForQueueingCommands():
-    """
-    Look for qsub and sbatch in the execution path and return the first found queueing system
-    """
-    for queue, binary in queueBinaryMap.items():
-        if checkForBinary(binary):
-            return queue
-    else:
-        raise Exception("Cannot locate a queueing system. None of these executables were found in your PATH: %s" % (queueBinaryMap.values(),))
-
-def checkForBinary(binary):
-    """
-    Look for binary with `which`.
-    """
-    try:
-        fullPath = subprocess.check_output(['which',binary])
-        return True
-    except subprocess.CalledProcessError as e:
-        return False
+        logging.warning("Debugging level is high, so skipping cleanup and leaving temporary files in place")
+        sys.exit(0)
+    logging.debug("Done!")
+    sys.exit(exitcode)
 
 def getJobName(programPath=None):
     """
@@ -1027,7 +957,7 @@ def translatePositionalArgs(options,cmdargs,checkMap):
         if isinstance(options.threadsFlag,int):
             options.threadsFlag=positionMap[options.threadsFlag-1]
 
-def checkCommand(command,sgeOptions,batchOptions):
+def checkCommand(command,batchOptions):
     """
     parse command string and do some basic checks:
         if command is recognized, check for required options
@@ -1055,7 +985,7 @@ def checkCommand(command,sgeOptions,batchOptions):
             # run any task specific processing on command
             #  use aplyDefaults() if nothing specific for this task
             if taskType in inspectCommandForTaskType:
-                inspectCommandForTaskType[taskType](command,taskType,sgeOptions,m.group(1),batchOptions)
+                inspectCommandForTaskType[taskType](command,taskType,m.group(1),batchOptions)
             else:
                 applyDefaultsToCommand(command,taskType)
             return taskType
@@ -1063,7 +993,7 @@ def checkCommand(command,sgeOptions,batchOptions):
     # if not recognized, just leave as is
     return None
 
-def launchLocalJobs(options, cmdargs, errStream):
+def launchLocalJobs(options, cmdargs):
     logging.debug("Launching command array: %r" % ({'tmpDir':options.tmpDir,'splits':options.splits,'fragName':options.fragBase,'cmd':cmdargs,'loglevel':options.verbose, 'type':options.taskType, 'throttle':options.throttle}))
     
     numTasks = options.splits
@@ -1099,259 +1029,6 @@ def launchLocalJobs(options, cmdargs, errStream):
     errorCount = errorQueue.qsize()+1
     logging.warning("%d of %d tasks reported non zero exit codes!" % (errorCount, numTasks))
     sys.exit(exitcode)
-
-def launchJobs(options, cmdargs, errStream=sys.stdin):
-    """
-    launch the SGE task array. Return the job ID
-
-    splits can be a single interger or a pair of integers
-    this will launch
-         the indicated task number
-         the range of tasks numbers indicated by the pair (inclusive)
-    """
-
-    if options.queue == LOCAL:
-        launchLocalJobs(options,cmdargs,errStream)
-        return
-
-    logging.debug("Launching task array: %r" % ({'tmpDir':options.tmpDir,'splits':options.splits,'fragName':options.fragBase,'cmd':cmdargs,'sgeOpts':options.sgeOptions,'job':options.jobName,'priority':options.priority,'loglevel':options.verbose,'wait':options.wait, 'type':options.taskType}))
-    
-    # SGE or SLURM submission prefix
-    command = getSubmissionCommandPrefix(options)
-
-    # batch_runner command
-    command.append(BATCHLAUNCHER)
-    command+=["--mode","run","--tmp_dir",options.tmpDir,"--frag_base",
-              options.fragBase, "--frag_dir", options.frag_dir, "--frag_suffix", options.fragSuff, "--loglevel", str(options.verbose), "--queue", options.queue]
-    if options.inputFlag is not None:
-        command.append('-i=%s' % (options.inputFlag))
-    if options.prefixFlag is not None:
-        command.append('-p=%s' % (options.prefixFlag))
-    if options.threadsFlag is not None:
-        command+=['-t',str(options.threadsFlag)]
-    if options.outputFlags is not None:
-        for flag in options.outputFlags:
-            command.append('-o=%s' % (flag))
-    if options.taskType is not None:
-        command+=['--taskType',options.taskType]
-    if options.cwd:
-        command.append('--cwd')
-    command.append('--')
-    command+=cmdargs
-
-    # redirect qsub output to std, silence if vebose is 0
-    #if options.verbose==0:
-    #    qsubOuts=open(os.devnull,'w')
-    #else:
-    #    qsubOuts=errStream
-    
-    # run command
-    logging.debug('Launching task array: %s' % (formatCommand(command)))
-    try:
-        submissionOutput = subprocess.check_output(command)
-        try:
-            submissionOutput = submissionOutput.decode()
-        except:
-            pass
-        if options.verbose>0:
-            errStream.write("Submission Output: " + submissionOutput)
-    except subprocess.CalledProcessError as error:
-        if options.wait and options.queue != SLURM:
-            # when using -sync y, the exit code may come from a task
-            #  (which cleanup will handle)
-            logging.warning("qsub returned an error code of: %d" 
-                    % error.returncode)
-        else:
-            raise error
-
-    # get job id
-    try:
-        jobid = re.search(r'(\d+)\s*$',submissionOutput).group(1)
-        options.jobid = jobid
-    except:
-        if options.queue==SLURM:
-            logging.error("Cannot parse SLURM job id from '%s'" % (submissionOutput))
-            raise
-
-    # SLURM doesn't allow waiting for completion on array jobs, so we hack:
-    #  use srun to start a dummy job that will wait for our job array
-    if options.wait and options.queue==SLURM:
-        waitForSlurmArray(options, errStream)
-
-def waitForSlurmArray(options, errStream):
-
-    # redirect qsub output to std, silence if vebose is 0
-    if options.verbose==0:
-        qsubOuts=open(os.devnull,'w')
-    else:
-        qsubOuts=errStream
-
-    command=["srun",]
-    command+=["--dependency=afterany:%s" % (options.jobid),]
-    #if isinstance(options.sgeOptions,str):
-    #    command+=shlex.split(options.sgeOptions)
-    #else:
-    #    command+=options.sgeOptions
-
-    command += ["true"]
-
-    logging.debug('Launching command to wait: %s' % (formatCommand(command)))
-    exitcode=subprocess.call(command, stdout=qsubOuts)
-
-    if exitcode!=0:
-        raise subprocess.CalledProcessError(exitcode, command)
-
-
-def getSubmissionCommandPrefix(options, cleanupFile=None):
-    """
-    Generate the SGE or SLURM submission prefix (as a list of strings). 
-    """
-    submitData={}
-    #priority
-    priority=options.priority
-    if cleanupFile is not None:
-        priority = min(0,priority)
-    else:
-        priority = min(-1,priority-10)
-    submitData['priority']=str(priority)
-    submitData['interpreter']=PYTHON
-
-    # job name and output files
-    if cleanupFile is not None:
-        submitData['jobName']="%s.cleanup" % (options.jobName)
-        submitData['output']="%s.cleanup.out" % (cleanupFile)
-        submitData['error']="%s.cleanup.err" % (cleanupFile)
-        submitData['waitfor']=options.jobName if options.queue != SLURM else options.jobid
-    else:
-        submitData['jobName']=options.jobName
-        submitData['output']="%s%stasks.out" %(options.tmpDir, os.sep)
-        submitData['error']="%s%stasks.err" % (options.tmpDir, os.sep)
-        if isinstance(options.splits,int):
-            submitData['tasks'] = "1-%d" % options.splits
-        else:
-            if options.splits[0]==options.splits[1]:
-                submitData['tasks']=str(options.splits[0])
-            else:
-                submitData['tasks']="%d-%d" % tuple(options.splits)
-        if options.throttle>0:
-            submitData['throttle']=str(options.throttle)
-        if options.wait:
-            submitData['sync']=True
-    if isinstance(options.sgeOptions,str):
-        submitData['options']=shlex.split(options.sgeOptions)
-    else:
-        submitData['options']=options.sgeOptions
-
-    if options.queue==SGE:
-        return getSGECommandPrefix(submitData)
-    else:
-        return getSLURMCommandPrefix(submitData)
-
-def getSLURMCommandPrefix(submitData):
-    command=["sbatch",]
-    #, "-hard", "-cwd", "-V"]
-    if 'waitfor' in submitData:
-        command+=["--dependency=afterany:%s" % (submitData['waitfor']),]
-    #command+=["-p",submitData['priority']]
-    command+=["--job-name=%s" % (submitData['jobName']),
-              "--output=%s" % (submitData['output']),
-              "--error=%s" % (submitData['error'])]
-    if 'tasks' in submitData:
-        taskSpec = submitData['tasks']
-        if 'throttle' in submitData:
-            taskSpec+="%" + submitData['throttle']
-        command+=["--array=%s" % (taskSpec),]
-    #if 'sync' in submitData:
-    #    command+=['-sync','y']
-    if 'options' in submitData:
-        command+=submitData['options']
-    return command
-
-def getSGECommandPrefix(submitData):
-    command=["qsub", "-hard", "-cwd", "-V"]
-    command+=["-S",submitData['interpreter']]
-    command+=["-p",submitData['priority']]
-    if 'waitfor' in submitData:
-        command+=["-hold_jid", submitData['waitfor']]
-    command+=["-N", submitData['jobName'],
-              "-o", submitData['output'],
-              "-e", submitData['error']]
-    if 'tasks' in submitData:
-        command+=["-t",submitData['tasks']]
-    if 'throttle' in submitData:
-        command+=["-tc", submitData['throttle']]
-    if 'sync' in submitData:
-        command+=['-sync','y']
-    if 'options' in submitData:
-        command+=submitData['options']
-    return command
-
-def launchCleanup(options, cmdargs, errStream=sys.stderr):
-    """
-    launch the cleanup script, which is this script with the --cleanup flag
-    """
-    logging.debug("Launching cleanup: %s" % ({'tmpDir':options.tmpDir,'splits':options.splits,'fragBase':options.fragBase,'out':options.outputFlags,'job':options.jobName}))
-
-    # name outputfiles
-    outFileByFlag = getOutputFiles(options, cmdargs)
-    logging.debug("Outfiles: %s" % (outFileByFlag))
-    fileNameBase = getFileNameBase(options.outputFlags, 
-                                   outFileByFlag,
-                                   options.jobName)
-    logging.debug("File Name Base: %s" % (fileNameBase))
-
-    # build command
-    # sge
-    command = getSubmissionCommandPrefix(options, cleanupFile=fileNameBase)
-    
-    # cleanup
-    command+=[BATCHLAUNCHER,
-              '--tmp_dir', options.tmpDir,
-              '--frag_base', options.fragBase,
-              '--frag_dir', options.frag_dir,
-              '--frag_suffix', options.fragSuff,
-              '--mode', 'cleanup',
-              '--numChunks', str(options.splits), 
-              '--loglevel', str(options.verbose),
-              '--retries', str(options.retries),
-              '--jobName', options.jobName,
-              '--chunk', str(options.chunk),
-              '--queue', options.queue]
-    if options.splitOnSize:
-        command.append('--splitOnSize')
-    if options.inputFlag is not None:
-        command.append('-i=%s' % str(options.inputFlag))
-    if options.prefixFlag is not None:
-        command.append('-p=%s' % str(options.prefixFlag))
-    if options.threadsFlag is not None:
-        command+=['-t',str(options.threadsFlag)]
-    if options.outputFlags is not None:
-        for flag in options.outputFlags:
-            command.append('-o=%s' % str(flag))
-    if options.taskType is not None:
-        command+=['--taskType',options.taskType]
-    if options.pattern is not None:
-        command+=['--pattern', options.pattern]
-    if options.numLines is not None:
-        command+=['--recordLines', options.numLines]
-    elif options.infileType is not None:
-        command+=['--infileType',options.infileType]
-    if options.cwd:
-        command.append('--cwd')
-    if options.sgeOptions:
-        command.append('-S="%s"' % " ".join(options.sgeOptions))
-    command.append('--')
-    command+=cmdargs
-
-    # redirect qsub output to std, silence if vebose is 0
-    if options.verbose==0:
-        qsubOuts=open(os.devnull,'w')
-    else:
-        qsubOuts=errStream
-
-    # run command
-    logging.debug('Launching cleanup: %s' % (formatCommand(command)))
-    subprocess.check_call(command, stdout=qsubOuts)
 
 def cleanup(options, cmdargs, errStream=sys.stdin):
     """
@@ -1554,9 +1231,8 @@ def cleanup(options, cmdargs, errStream=sys.stdin):
                 moveNewFragmentsToTmpDir(options,nextTaskNum)
 
                 # re-process tmp dir
-                options.wait=True
                 logging.info("Cleanup will restart tasks: %s" % (options.splits))
-                launchJobs(options, cmdargs, errStream=errStream)
+                launchLocalJobs(options, cmdargs)
 
                 # set up list of fragments to check on next cleanup pass
                 taskIds = list(range(1,nextTaskNum))
@@ -1938,45 +1614,19 @@ def copyFragmentOutputDir(fragmentOutputDir, finalOutputData):
     shutil.move(fragmentOutputDir,
                 finalOutputData)
 
-def runFragment(options, cmdargs, taskNum=None):
+def runFragment(options, cmdargs, taskNum):
     """
-    Execute the command on a fragment of the input file. In the SGE model, this should
-    only be run on a compute node.
-    The fragment number will be pulled from the SGE_TASK_ID env variable
-
-    When fragmenting locally, the task number will be set explicitly in the
-    call.
+    Execute the command on one fragment of the input file.
     """
     t0=time.time()
     exitcode=-3
 
-    # create local tmp dir
-    if options.queue == LOCAL:
-        localDir = tempfile.mkdtemp(suffix='batchRunner', dir=options.tmpDir)
-    else:
-        localDir = tempfile.mkdtemp(suffix='batchRunner')
+    localDir = tempfile.mkdtemp(suffix='batchRunner', dir=options.tmpDir)
     logging.debug("Local dir (%s): %s" % (os.path.exists(localDir), localDir))
-
-    #if options.queue != LOCAL:
-    if taskNum is None:
-        # get the task number from env
-        taskNum=getTaskId(options)
 
     hostname=getHostName()
     logFile="%s%stask%05d.%s.log" % (localDir,os.sep,taskNum,hostname)
     errStream=open(logFile,'w')
-    # if called from SGE, we will have to:
-    if options.queue != LOCAL:
-        # set up logging
-        if options.verbose==0:
-            loglevel=logging.ERROR
-        elif options.verbose==1:
-            loglevel=logging.WARN
-        elif options.verbose==2:
-            loglevel=logging.INFO
-        elif options.verbose>=3:
-            loglevel=logging.DEBUG
-        logging.basicConfig(stream=errStream, level=loglevel)
 
     # set up file names
     infragmentName = getFragmentName(options.fragBase, taskNum,
@@ -1986,12 +1636,8 @@ def runFragment(options, cmdargs, taskNum=None):
     infragment = "%s%s%s" % (fragment_dir, os.sep, infragmentName)
     stdoutFragment=os.path.join(options.tmpDir, infragmentName) + ".stdout"
     stderrFragment=os.path.join(options.tmpDir, infragmentName) + ".stderr"
-    if options.queue == LOCAL:
-        stdoutLocal=stdoutFragment
-        stderrLocal=stderrFragment
-    else:
-        stdoutLocal = "%s%stask%s.%s.stdout" % ( localDir, os.sep, taskNum, hostname )
-        stderrLocal = "%s%stask%s.%s.stderr" % ( localDir, os.sep, taskNum, hostname )
+    stdoutLocal=stdoutFragment
+    stderrLocal=stderrFragment
 
     try:
         logging.debug("Begin runFragment: type: %s, host: %s" % (options.taskType, hostname))
@@ -2016,7 +1662,7 @@ def runFragment(options, cmdargs, taskNum=None):
 
         # modify command
         outLocal = "%s%s%s.output" % (localDir, os.sep, infragmentName)
-        (foundI, outputFlags) = prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs, hostname, errStream)
+        (foundI, outputFlags) = prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs)
         logging.debug("ready ro RUN!")
 
         # fragmented HMMdbs need to be compiled
@@ -2062,13 +1708,6 @@ def runFragment(options, cmdargs, taskNum=None):
         if exitcode != 0:
             logging.error("Error code %d from command:\n%s" % (exitcode,cmdargs))
 
-        if options.queue != LOCAL:
-            # copy stderr and stdout
-            logging.info("Copying %s to %s" % (stdoutLocal,stdoutFragment))
-            shutil.copy(stdoutLocal,stdoutFragment)
-            logging.info("Copying %s to %s" % (stderrLocal,stderrFragment))
-            shutil.copy(stderrLocal,stderrFragment)
-
         # move output files
         for flag in outputFlags:
             # check for other files
@@ -2110,15 +1749,9 @@ def runFragment(options, cmdargs, taskNum=None):
     logging.info("Fragment took %.2f seconds" % (t2-t0))
 
     # copy err to shared dir
-    if options.queue != LOCAL:
-        logging.shutdown()
     errStream.close()
-    if options.queue == LOCAL:
-        shutil.move(logFile, os.path.join(options.tmpDir,
-                                          "%s.log" % (infragmentName)))
-    else:
-        shutil.copy(logFile, os.path.join(options.tmpDir,
-                                          "%s.log" % (infragmentName)))
+    shutil.move(logFile, os.path.join(options.tmpDir,
+                                      "%s.log" % (infragmentName)))
 
     # remove local temorary dir (if not debugging)
     if logging.getLogger().level > logging.DEBUG:
@@ -2303,7 +1936,7 @@ def getOutputFiles(options, cmdargs):
 
     return outFileByFlag
 
-def prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs, hostname, errStream):
+def prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs):
     """
     Replace input and output file names (and thread count) with fragment versions
 
@@ -2372,10 +2005,7 @@ def prepareCommandForFragment(options, infragment, prefix, outLocal, cmdargs, ho
                           old_path, new_path)
             cmdargs[i] = new_path
         elif nextArgument=='threads':
-            if options.queue != LOCAL:
-                threads = getThreadCountForNode(hostname,errStream)
-                logging.debug("%s can take %d threads" % (hostname,threads))
-                cmdargs[i]=str(threads)
+            pass
         else:
             # something went wrong
             logging.warning("Unrecognized nextArgument: %s" % (nextArgument))
@@ -2439,77 +2069,6 @@ def getDBType(database):
     else:
         return None
 
-def getThreadCountForNode(hostname,errStream,queue=SGE):
-    """
-    figure out how many threads the job can use
-
-    Calls system specific (SGE or SLURM) version of function.
-    """
-    if queue==SGE:
-        return getThreadCountForSGENode(hostname, errStream)
-    elif queue==SLURM:
-        return getThreadsCountForSLURMNode(hostname, errStream)
-    else:
-        logging.warning("Unrecognized queue (%s), using 8 cores" % (queue))
-        return 8
-
-def getThreadCountForSLRUMNode(hostname, errStream):
-    """
-    figure out how many threads the job can use
-    """
-    qhcmd = ["sinfo","-n", hostname, "-o", '"%15N %10c"']
-    process=subprocess.Popen(qhcmd,stdout=subprocess.PIPE)
-    sinfoCPUsRE = re.compile(r'^\S+\s+(\d+)')
-    qhout=""
-    for line in process.stdout:
-        qhout+=line
-        m=sinfoCPUsRE.search(line)
-        if m:
-            slots = int(m.group(1))
-            logging.debug("Node %s has %d slots" % (hostname, slots))
-            break
-    else:
-        slots=8
-        logging.warning("Could not parse sinfo output:\n%s" % (qhout))
-    return slots
-
-def getThreadCountForSGENode(hostname, errStream):
-    """
-    figure out how many threads the job can use
-    """
-    qhcmd = ["qhost","-h", hostname]
-    process=subprocess.Popen(qhcmd,stdout=subprocess.PIPE)
-    qhostSlotsRE = re.compile(r'^\S+\s+\S+\s+(\d+)\s+')
-    qhout=""
-    for line in process.stdout:
-        qhout+=line
-        m=qhostSlotsRE.search(line)
-        if m:
-            slots = int(m.group(1))
-            logging.debug("Node %s has %d slots" % (hostname, slots))
-            break
-    else:
-        slots=8
-        logging.warning("Could not parse qhost output:\n%s" % (qhout))
-    return slots
-
-def getTaskId(options):
-    if options.queue==SGE:
-        return getSGETaskId()
-    else:
-        return getSLURMTaskId()
-
-def getSLURMTaskId():
-    logging.debug("SLURM_ARRAY_TASK_ID: %s" % os.environ.get('SLURM_ARRAY_TASK_ID',None))
-    logging.debug("SLURM_ARRAY_JOB_ID: %s" % os.environ.get('SLURM_ARRAY_JOB_ID',None))
-    logging.debug("SLURM_JOBID: %s" % os.environ.get('SLURM_JOBID',None))
-    return int(os.environ.get('SLURM_ARRAY_TASK_ID',1))
-
-def getSGETaskId():
-    taskid = int(os.environ.get('SGE_TASK_ID',1))
-    logging.debug("getting SGE task id (%d)" % (taskid))
-    return taskid
-
 def getHostName():
     try:
         return os.uname()[1].split('.')[0]
@@ -2524,10 +2083,9 @@ def getHostName():
 # task specific code
 ##################
 ## FR-HIT
-def inspectFrHitCommand(command,taskType,sgeOptions,commandBin,batchOptions):
+def inspectFrHitCommand(command,taskType,commandBin,batchOptions):
     """
     get db size of input database and add as parameter to commmand (if not already there)
-    add sge option to throttle this task since it's all over network disks
     """
 
     logging.info("Looking for reference db")
@@ -2583,17 +2141,17 @@ def inspectFrHitCommand(command,taskType,sgeOptions,commandBin,batchOptions):
             if not batchOptions.splitOnSize:
                 logging.warning("Are you sure you want to split on number of records? It usually is a good idea to split on number of bases (-s)")
 
-def inspectLastCommand(command,taskType,sgeOptions,commandBin,batchOptions):
+def inspectLastCommand(command,taskType,commandBin,batchOptions):
     # apply the defaults
     applyDefaultsToCommand(command,taskType,prepend=True)
 
 ## Blast
-def inspectDCMBCommand(command,taskType,sgeOptions,blastBin,batchOptions):
+def inspectDCMBCommand(command,taskType,blastBin,batchOptions):
     # replace first element of command string ('dcmegabalst') with 'blastn -task ...'
     command[0:1]=['blastn','-task','dc-megablast']
-    inspectBlastCommand(command,taskType,sgeOptions,blastBin,batchOptions)
+    inspectBlastCommand(command,taskType,blastBin,batchOptions)
 
-def inspectBlastCommand(command,taskType,sgeOptions,blastBin,batchOptions):
+def inspectBlastCommand(command,taskType,blastBin,batchOptions):
     """
     if using blastall, make sure prog/alg name is ok (one of: blastn, blastx, etc)
     """
@@ -2734,9 +2292,6 @@ def applyDefaultsToCommand(command,taskType,prepend=False):
 ##################
 # Constants
 ##################
-BATCHLAUNCHER=os.path.abspath(__file__)
-PYTHON=sys.executable
-#BATCHLAUNCHER=os.sep.join([BINDIR,'batch_launcher.py'])
 scriptingLanguages=['perl','python','ruby','sh', 'bash']
 # task types
 BLAST='blast'

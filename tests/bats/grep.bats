@@ -5,9 +5,16 @@
     [ "$status" = 2 ]
 }
 
-@test "Testing missing wait flag" {
+@test "Rejecting unsupported SGE option" {
     run ./batch_launcher.py -X sge -C 10 -- grep "^>" test_data/HOT_100_reads.fasta
     [ "$status" = 2 ]
+    [[ "$output" == *"sge option is no longer supported"* ]]
+}
+
+@test "Rejecting unsupported SLURM option" {
+    run ./batch_launcher.py -X slurm -C 10 -- grep "^>" test_data/HOT_100_reads.fasta
+    [ "$status" = 2 ]
+    [[ "$output" == *"slurm option is no longer supported"* ]]
 }
 
 @test "Testing missing input designation" {
@@ -22,13 +29,13 @@
 }
 
 @test "Testing good command" {
-    run ./batch_launcher.py -C 10 -X local -i 2 -- grep "^>" test_data/HOT_100_reads.fasta 
+    run ./batch_launcher.py -C 10 -i 2 -- grep "^>" test_data/HOT_100_reads.fasta
     [ "$status" = 0 ]
     [ "${#lines[@]}" = 100 ]
 }
 
 @test "Testing no splitting" {
-    run ./batch_launcher.py -N 1 -X local -i 2 -- grep "^>" test_data/HOT_100_reads.fasta 
+    run ./batch_launcher.py -N 1 -X local -i 2 -- grep "^>" test_data/HOT_100_reads.fasta
     [ "$status" = 0 ]
     [ "${#lines[@]}" = 100 ]
 }
