@@ -8,6 +8,7 @@ __pycache__/
 # Distribution / packaging
 .Python
 env/
+test.env/
 build/
 develop-eggs/
 dist/
@@ -65,4 +66,5 @@ target/
 *.slurm
 .tst.*
 .batch_launcher
-tmp*/
+tmp*Bat_*/
+test_envs/

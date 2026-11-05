@@ -1,9 +1,7 @@
 #!/usr/bin/env bats
 
-
-
 setup() {
-    if [ ! -e test_data/.tst.genes.faa.prj ]; then 
+    if [ ! -e test_data/.tst.genes.faa.prj ]; then
         lastdb -p test_data/.tst.genes.faa test_data/genes.faa
     fi
 }
