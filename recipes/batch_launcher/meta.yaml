@@ -1,0 +1,40 @@
+{% set name = "batch_launcher" %}
+{% set version = load_file_regex(
+    load_file='../../batch_launcher.py',
+    regex_pattern='__version__ = "([^"]+)"',
+    from_recipe_dir=True
+).group(1) %}
+{% set summary = "Python script to fragment tasks for parallel execution" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  path: ../..
+
+build:
+  number: 0
+  noarch: python
+  script: {{ PYTHON }} -m pip install . --no-deps --no-build-isolation
+
+requirements:
+  host:
+    - python >=3.9
+    - pip
+    - setuptools >=61
+  run:
+    - python >=3.9
+
+test:
+  imports:
+    - batch_launcher
+  commands:
+    - batch_launcher --version
+
+about:
+  home: https://github.com/jmeppley/batch_launcher
+  summary: {{ summary }}
+  license: MIT
+  license_file: LICENSE
+  dev_url: https://github.com/jmeppley/batch_launcher

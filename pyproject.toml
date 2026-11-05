@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Python script to fragment tasks for parallel execution"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Apache" }
+license = { text = "MIT" }
 authors = [
   { name = "John Eppley", email = "jmeppley@gmail.com" },
 ]
@@ -19,7 +19,7 @@ classifiers = [
   "Development Status :: 4 - Beta",
   "Environment :: Console",
   "Intended Audience :: Science/Research",
-  "License :: OSI Approved :: GPL License",
+  "License :: OSI Approved :: MIT License",
   "Natural Language :: English",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
